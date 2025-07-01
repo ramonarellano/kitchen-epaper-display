@@ -6,9 +6,8 @@ set -e
 # Set Pico SDK path
 export PICO_SDK_PATH="$PWD/pico-sdk"
 
-# Clean and create build directory
-rm -rf build
-mkdir build
+# Create build directory if it doesn't exist
+mkdir -p build
 cd build
 
 # Build the project

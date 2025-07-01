@@ -1,2 +1,28 @@
 # Ignore pico-sdk directory
 pico-sdk/
+
+# CMake build output
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Firmware and binary artifacts
+*.uf2
+*.elf
+*.bin
+*.map
+*.o
+*.d
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VS Code settings
+.vscode/
+
+# macOS metadata
+.DS_Store
