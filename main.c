@@ -1,141 +1,144 @@
-#include "EPD_Test.h"   // Examples
-#include "run_File.h"
+#include <stdlib.h>
+#include "hardware/uart.h"
+#include "lib/led/led.h"
+#include "pico/stdio.h"
+#include "pico/stdlib.h"
 
-#include "led.h"
-#include "waveshare_PCF85063.h" // RTC
-#include "DEV_Config.h"
+#define Mode 3
+#define UART_ID uart0
+#define UART_BAUD 115200
+#define UART_TX_PIN 0
+#define UART_RX_PIN 1
+#define IMAGE_SIZE (800 * 480 / 8)  // Example for 1bpp 800x480
 
-#include <time.h>
+#include "lib/Fonts/fonts.h"
+#include "lib/GUI/GUI_Paint.h"
+#include "lib/e-Paper/EPD_7in3f.h"
 
-extern const char *fileList;
-extern char pathName[];
-
-#define enChargingRtc 0
-
-/*
-Mode 0: Automatically get pic folder names and sort them
-Mode 1: Automatically get pic folder names but not sorted
-Mode 2: pic folder name is not automatically obtained, users need to create fileList.txt file and write the picture name in TF card by themselves
-*/
-#define Mode 2
-
-
-float measureVBAT(void)
-{
-    float Voltage=0.0;
-    const float conversion_factor = 3.3f / (1 << 12);
-    uint16_t result = adc_read();
-    Voltage = result * conversion_factor * 3;
-    printf("Raw value: 0x%03x, voltage: %f V\n", result, Voltage);
-    return Voltage;
+float measureVBAT(void) {
+  float Voltage = 0.0;
+  const float conversion_factor = 3.3f / (1 << 12);
+  uint16_t result = adc_read();
+  Voltage = result * conversion_factor * 3;
+  printf("Raw value: 0x%03x, voltage: %f V\n", result, Voltage);
+  return Voltage;
 }
 
-void chargeState_callback() 
-{
-    if(DEV_Digital_Read(VBUS)) {
-        if(!DEV_Digital_Read(CHARGE_STATE)) {  // is charging
-            ledCharging();
-        }
-        else {  // charge complete
-            ledCharged();
-        }
+void chargeState_callback() {
+  if (DEV_Digital_Read(VBUS)) {
+    if (!DEV_Digital_Read(CHARGE_STATE)) {  // is charging
+      ledCharging();
+    } else {  // charge complete
+      ledCharged();
     }
+  }
 }
 
-void run_display(Time_data Time, Time_data alarmTime, char hasCard)
-{
-    if(hasCard) {
-        setFilePath();
-        EPD_7in3f_display_BMP(pathName, measureVBAT());   // display bmp
-    }
-    else {
-        EPD_7in3f_display(measureVBAT());
-    }
-
-    PCF85063_clear_alarm_flag();    // clear RTC alarm flag
-    rtcRunAlarm(Time, alarmTime);  // RTC run alarm
+void led_ok_pattern(void) {
+  DEV_Digital_Write(LED_ACT, 1);
+  DEV_Delay_ms(100);
+  DEV_Digital_Write(LED_ACT, 0);
+  DEV_Delay_ms(400);
+}
+void led_error_pattern(void) {
+  for (int i = 0; i < 3; i++) {
+    DEV_Digital_Write(LED_ACT, 1);
+    DEV_Delay_ms(100);
+    DEV_Digital_Write(LED_ACT, 0);
+    DEV_Delay_ms(100);
+  }
+  DEV_Delay_ms(700);
 }
 
-int main(void)
-{
-    Time_data Time = {2024-2000, 3, 31, 0, 0, 0};
-    Time_data alarmTime = Time;
-    // alarmTime.seconds += 10;
-    // alarmTime.minutes += 30;
-    alarmTime.hours +=24;
-    char isCard = 0;
-  
-    printf("Init...\r\n");
-    if(DEV_Module_Init() != 0) {  // DEV init
-        return -1;
-    }
-    
-    watchdog_enable(8*1000, 1);    // 8s
-    DEV_Delay_ms(1000);
-    PCF85063_init();    // RTC init
-    rtcRunAlarm(Time, alarmTime);  // RTC run alarm
-    gpio_set_irq_enabled_with_callback(CHARGE_STATE, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, chargeState_callback);
+void uart_log(const char* msg) {
+  uart_puts(UART_ID, "LOG: ");
+  uart_puts(UART_ID, msg);
+  uart_puts(UART_ID, "\r\n");
+  printf("LOG: %s\r\n", msg);  // Also log to USB serial
+}
 
-    if(measureVBAT() < 3.1) {   // battery power is low
-        printf("low power ...\r\n");
-        PCF85063_alarm_Time_Disable();
-        ledLowPower();  // LED flash for Low power
-        powerOff(); // BAT off
-        return 0;
+int request_and_receive_image(uint8_t* buffer, size_t size) {
+  uart_log("Requesting image from ESP32");
+  uart_puts(UART_ID, "SENDIMG\n");
+  size_t received = 0;
+  absolute_time_t start = get_absolute_time();
+  while (received < size) {
+    if (absolute_time_diff_us(start, get_absolute_time()) > 5000000) {
+      uart_log("Timeout waiting for image data");
+      return -1;
     }
-    else {
-        printf("work ...\r\n");
-        ledPowerOn();
+    if (uart_is_readable(UART_ID)) {
+      buffer[received++] = uart_getc(UART_ID);
     }
+  }
+  uart_log("Image received");
+  return 0;
+}
 
-    if(!sdTest()) 
-    {
-        isCard = 1;
-        if(Mode == 0)
-        {
-            sdScanDir();
-            file_sort();
+const uint8_t fallback_image[IMAGE_SIZE] = {[0 ... IMAGE_SIZE - 1] = 0xFF};
+
+void display_fallback_image(void) {
+  EPD_7IN3F_Init();
+  UDOUBLE Imagesize = ((EPD_7IN3F_WIDTH % 2 == 0) ? (EPD_7IN3F_WIDTH / 2)
+                                                  : (EPD_7IN3F_WIDTH / 2 + 1)) *
+                      EPD_7IN3F_HEIGHT;
+  UBYTE* BlackImage = (UBYTE*)malloc(Imagesize);
+  if (!BlackImage) {
+    uart_log("Failed to allocate memory for fallback image");
+    return;
+  }
+  Paint_NewImage(BlackImage, EPD_7IN3F_WIDTH, EPD_7IN3F_HEIGHT, 0,
+                 EPD_7IN3F_WHITE);
+  Paint_SetScale(7);
+  Paint_SelectImage(BlackImage);
+  Paint_Clear(EPD_7IN3F_WHITE);
+  Paint_DrawString_EN(100, 220, "NO SERIAL CONNECTION", &Font24,
+                      EPD_7IN3F_BLACK, EPD_7IN3F_WHITE);
+  EPD_7IN3F_Display(BlackImage);
+  EPD_7IN3F_Sleep();
+  free(BlackImage);
+}
+
+int main(void) {
+  stdio_init_all();  // Initialize USB serial
+  if (DEV_Module_Init() != 0) {
+    return -1;
+  }
+  uart_init(UART_ID, UART_BAUD);
+  gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+  gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+  uart_log("System started");
+  uint8_t image_buffer[IMAGE_SIZE];
+  int error = 0;
+  int fallback_displayed = 0;
+  while (1) {
+    if (!error) {
+      led_ok_pattern();
+    } else {
+      led_error_pattern();
+    }
+    if (!error) {
+      if (request_and_receive_image(image_buffer, IMAGE_SIZE) == 0) {
+        uart_log("Displaying image");
+        // TODO: implement EPD_7in3f_display_BMP_from_buffer(image_buffer)
+        // EPD_7in3f_display_BMP_from_buffer(image_buffer);
+        uart_log("Image displayed");
+      } else {
+        if (!fallback_displayed) {
+          uart_log("Image receive failed, displaying fallback image");
+          display_fallback_image();
+          uart_log("Fallback image displayed");
+          fallback_displayed = 1;
+        } else {
+          uart_log("Image receive failed, fallback already displayed");
         }
-        if(Mode == 1)
-        {
-            sdScanDir();
-        }
-        if(Mode == 2)
-        {
-            file_cat();
-        }
-        
+        error = 1;
+      }
+    } else {
+      uart_log("Retrying after error");
+      DEV_Delay_ms(10000);
+      error = 0;
     }
-    else 
-    {
-        isCard = 0;
-    }
-
-    if(!DEV_Digital_Read(VBUS)) {    // no charge state
-        run_display(Time, alarmTime, isCard);
-    }
-    else {  // charge state
-        chargeState_callback();
-        while(DEV_Digital_Read(VBUS)) {
-            measureVBAT();
-            
-            #if enChargingRtc
-            if(!DEV_Digital_Read(RTC_INT)) {    // RTC interrupt trigger
-                printf("rtc interrupt\r\n");
-                run_display(Time, alarmTime, isCard);
-            }
-            #endif
-
-            if(!DEV_Digital_Read(BAT_STATE)) {  // KEY pressed
-                printf("key interrupt\r\n");
-                run_display(Time, alarmTime, isCard);
-            }
-            DEV_Delay_ms(200);
-        }
-    }
-    
-    printf("power off ...\r\n");
-    powerOff(); // BAT off
-
-    return 0;
+  }
 }
