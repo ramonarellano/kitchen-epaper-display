@@ -1,111 +1,63 @@
-# PhotoPainter
+# Kitchen e-Paper Display Firmware
 
-## Waveshare Electronics
-waveshare electronics</br>
-![waveshare_logo.png](waveshare_logo.png)
+[Original PhotoPainter Repository](https://github.com/waveshareteam/PhotoPainter)
 
----
+## Overview
+This project provides firmware for a Raspberry Pi Pico (or compatible RP2040 board) that receives images from an ESP32 over UART and displays them on a Waveshare 7.3" e-Paper display. The firmware also provides status feedback via onboard LEDs and logs messages to both UART and USB serial.
 
-## 中文说明
+## Main Features
 
-本例程为 PhotoPainter 的示例代码，友情开源，有bug欢迎反馈。
+- **Image Transfer via UART:**
+  - The Pico requests an image from the ESP32 by sending `SENDIMG` over UART.
+  - It waits for the image data to be received into a buffer (with a 5-second timeout).
+  - If successful, the image is displayed on the e-Paper display (custom display function to be implemented).
+  - If image reception fails, a fallback message is shown on the display.
 
-相关资料地址：  
-[PhotoPainter - Waveshare Wiki](https://www.waveshare.net/wiki/PhotoPainter)  
+- **Fallback Display:**
+  - If no image is received, the display shows "NO SERIAL CONNECTION" as a status message.
 
-## 图片制作
-一、使用 Photoshop 制作散点图，然后导入到 SD 卡。参考教程：  
-[E-Paper-Floyd-Steinberg - Waveshare Wiki](https://www.waveshare.net/wiki/E-Paper-Floyd-Steinberg)  
+- **LED Status:**
+  - LEDs indicate normal operation (single blink) or error state (triple blink).
 
-二、使用 图片制作工具-由Dr. Fedor G. Sarafanov 分享提供：  
-[Image Tool by Dr. Fedor G. Sarafanov](http://fedorsarafanov.github.io/imagetool/) 
+- **Logging:**
+  - Logs are sent to both UART and USB serial for debugging and monitoring.
 
-三、使用我们提供的七色抖动图片转换工具。下载链接：  
-[ConverTo7c_bmp.zip](https://www.waveshare.net/w/upload/e/ea/ConverTo7c_bmp.zip)  
+- **Battery Measurement:**
+  - The firmware measures battery voltage and logs it for diagnostics.
 
-### 图片转换工具使用
+## Usage
 
-#### Windows 系统
+### Building and Flashing the Firmware
 
-- **单张图片转换**  
-  将`图片`拖到 `convert.exe` 上即可完成转换。
+1. Make sure you have the Pico SDK and all dependencies cloned (already handled by the setup scripts).
 
-- **批量转换图片**  
-  将`图片`、`convert.exe` 和 `converterTo7color_all.cmd` 放在同一个文件夹中，然后双击 `converterTo7color_all.cmd` 文件即可进行批量转换。
+2. To mount your Raspberry Pi Pico as a USB drive (`RPI-RP2`), use this button sequence:
+   - Press and hold the **RUN** button.
+   - While holding **RUN**, press and hold the **BOOTSEL** button.
+   - Release the **RUN** button (keep holding **BOOTSEL**).
+   - Release the **BOOTSEL** button.
+   - The board should now appear as a USB drive named `RPI-RP2`.
 
-#### MAC 系统：
+3. Run the build and flash script:
 
-将`图片`、`convert`、`converterTo7color_all` 放在一个文件夹
+   ```sh
+   ./build_and_flash.sh
+   ```
 
-打开终端，进入对应的文件夹
-> cd xxxx/xxx/xxx/
+   This script will:
+   - Build the firmware using CMake and Make.
+   - Copy the generated UF2 file to the `RPI-RP2` drive.
 
-- **单张图片转换**  
-  输入命令，给予 `convert` 可执行权限
-  >sudo chmod +x convert
-  
-  转换图片
-  >./convert 图片名称
+4. After the UF2 file is copied, press the **RUN** (or RESET) button on your Pico to start the firmware.
 
-- **批量转换图片**  
-  要先对 `convert` 文件进行权限操作给予后才行
-  
-  输入命令，给予 `converterTo7color_all.sh` 可执行权限
-  >sudo chmod +x converterTo7color_all.sh
+### Serial Communication
 
-  转换图片
-  >./converterTo7color_all.sh
+- The firmware communicates with an ESP32 over UART0 (GPIO 0/1 at 115200 baud).
+- USB serial is also available for logging and debugging.
 
----
+### Notes
 
-## English
-
-This example code is for PhotoPainter, which is open-sourced in a friendly manner. If you find any bugs, please feel free to report them.
-
-Related documentation can be found at:  
-[PhotoPainter - Waveshare Wiki](https://www.waveshare.com/wiki/PhotoPainter)  
-
-## Image Preparation
-1.Using Photoshop to create a dithered image and then importing it to an SD card. For a tutorial, please refer to:  
-[E-Paper-Floyd-Steinberg - Waveshare Wiki](https://www.waveshare.com/wiki/E-Paper_Floyd-Steinberg)  
-
-2.Use the image-making tool - courtesy of Dr. Fedor G. Sarafanov:  
-[Image Tool by Dr. Fedor G. Sarafanov](http://fedorsarafanov.github.io/imagetool/) 
-
-3.Using our provided 7-color dithering image conversion tool. Download link:  
-[ConverTo7c_bmp.zip](https://files.waveshare.com/upload/e/ea/ConverTo7c_bmp.zip)  
-
-### How to Use the Image Conversion Tool
-
-#### For Windows:
-
-- **Single Image Conversion**  
-  Drag the image onto `convert.exe` to complete the conversion.
-
-- **Batch Image Conversion**   
-  Place the `images`, `convert.exe`, and `converterTo7color_all.cmd` in the same folder. Double-click the `converterTo7color_all.cmd` file to perform batch conversion.
-
-#### For MAC:
-
-Place the `images`, `convert` and `converterTo7color_all` in the same folder.
-
-Open the terminal and navigate to the corresponding folder:
-> cd xxxx/xxx/xxx/
-
-- **Single Image Conversion**  
-  Grant execution permission to `convert`:
-  >sudo chmod +x convert
-  
-  Convert the image:
-  >./convert image_name
-
-- **Batch Image Conversion**  
-  You need to first grant execution permissions to the `convert` file.
-
-  Grant execution permission to `converterTo7color_all.sh`:
-  >sudo chmod +x converterTo7color_all.sh
-
-  Convert the images:
-  >./converterTo7color_all.sh
+- If you do not see your board as a serial device after flashing, ensure you have pressed the **RUN** button after copying the UF2 file.
+- The image display function is a placeholder and should be implemented to match your image format and display requirements.
 
 ---
