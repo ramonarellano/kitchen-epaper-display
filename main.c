@@ -75,23 +75,32 @@ void led_status_off(void) {
 }
 
 void uart_log(const char* msg) {
-  uart_puts(UART_ID, "LOG: ");
-  uart_puts(UART_ID, msg);
-  uart_puts(UART_ID, "\r\n");
-  printf("LOG: %s\r\n", msg);  // Also log to USB serial
+  printf("LOG: %s\r\n", msg);  // Only log to USB serial
 }
+
+size_t last_receive_count = 0;
 
 int request_and_receive_image(uint8_t* buffer, size_t size) {
   uart_log("Requesting image from ESP32");
   uart_puts(UART_ID, "SENDIMG\n");
   size_t received = 0;
   absolute_time_t start = get_absolute_time();
+  absolute_time_t last_log = start;
   // Increase timeout to 25 seconds for large image
   while (received < size) {
-    if (absolute_time_diff_us(start, get_absolute_time()) >
-        25000000) {  // 25s timeout
+    absolute_time_t now = get_absolute_time();
+    if (absolute_time_diff_us(start, now) > 250000000) {  // 250s timeout
       uart_log("Timeout waiting for image data");
+      last_receive_count = received;
       return -1;
+    }
+    // Log every 2 seconds while waiting
+    if (absolute_time_diff_us(last_log, now) > 2000000) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "Still waiting for image data... %u/%u bytes",
+               (unsigned)received, (unsigned)size);
+      uart_log(msg);
+      last_log = now;
     }
     if (uart_is_readable(UART_ID)) {
       buffer[received++] = uart_getc(UART_ID);
@@ -104,12 +113,24 @@ int request_and_receive_image(uint8_t* buffer, size_t size) {
     }
   }
   uart_log("Image received");
+  last_receive_count = received;
   return 0;
 }
 
 const uint8_t fallback_image[IMAGE_SIZE] = {[0 ... IMAGE_SIZE - 1] = 0xFF};
 
 void display_fallback_image(void) {
+  uart_log("Resetting e-Paper display before fallback image");
+  // Try to manually toggle the reset pin if available
+#ifdef EPD_7IN3F_RST_PIN
+  gpio_init(EPD_7IN3F_RST_PIN);
+  gpio_set_dir(EPD_7IN3F_RST_PIN, GPIO_OUT);
+  gpio_put(EPD_7IN3F_RST_PIN, 0);
+  sleep_ms(200);
+  gpio_put(EPD_7IN3F_RST_PIN, 1);
+  sleep_ms(200);
+#endif
+  uart_log("Initializing e-Paper display for fallback image");
   EPD_7IN3F_Init();
   UDOUBLE Imagesize = ((EPD_7IN3F_WIDTH % 2 == 0) ? (EPD_7IN3F_WIDTH / 2)
                                                   : (EPD_7IN3F_WIDTH / 2 + 1)) *
@@ -126,6 +147,7 @@ void display_fallback_image(void) {
   Paint_Clear(EPD_7IN3F_WHITE);
   Paint_DrawString_EN(100, 220, "NO SERIAL CONNECTION", &Font24,
                       EPD_7IN3F_BLACK, EPD_7IN3F_WHITE);
+  uart_log("Displaying fallback image on e-Paper");
   EPD_7IN3F_Display(BlackImage);
   EPD_7IN3F_Sleep();
   free(BlackImage);
@@ -185,10 +207,20 @@ int main(void) {
         sleep_ms(1000);
       }
     } else {
+      uart_log("Image reception failed, will retry.");
       if (!fallback_displayed) {
-        uart_log("Image receive failed, displaying fallback image");
-        display_fallback_image();
-        uart_log("Fallback image displayed");
+        uart_log("Image receive failed, displaying fallback image (entering)");
+        // Only display fallback if we received at least 1 byte last time
+        extern size_t last_receive_count;  // declare external if needed
+        if (last_receive_count > 0) {
+          display_fallback_image();
+          uart_log("Fallback image displayed (exiting)");
+        } else {
+          uart_log(
+              "No data received, skipping fallback image to avoid e-Paper busy "
+              "lockup");
+        }
+        sleep_ms(1000);  // Give hardware time to settle
         fallback_displayed = 1;
       } else {
         uart_log("Image receive failed, fallback already displayed");
