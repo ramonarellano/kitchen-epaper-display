@@ -10,16 +10,11 @@
 #define UART_BAUD 115200
 #define UART_TX_PIN 4
 #define UART_RX_PIN 5
-#define IMAGE_SIZE (800 * 480 / 8)  // Example for 1bpp 800x480
+#define IMAGE_SIZE 192000  // 192,000 bytes for 800x480 (Waveshare 7-color)
 
 #include "lib/Fonts/fonts.h"
 #include "lib/GUI/GUI_Paint.h"
 #include "lib/e-Paper/EPD_7in3f.h"
-
-#define HANDSHAKE_MSG "HELLO ESP32\n"
-#define HANDSHAKE_REPLY "HELLO RP2040\n"
-#define HANDSHAKE_TIMEOUT_MS 2000
-#define HANDSHAKE_RETRIES 5
 
 float measureVBAT(void) {
   float Voltage = 0.0;
@@ -91,13 +86,21 @@ int request_and_receive_image(uint8_t* buffer, size_t size) {
   uart_puts(UART_ID, "SENDIMG\n");
   size_t received = 0;
   absolute_time_t start = get_absolute_time();
+  // Increase timeout to 25 seconds for large image
   while (received < size) {
-    if (absolute_time_diff_us(start, get_absolute_time()) > 5000000) {
+    if (absolute_time_diff_us(start, get_absolute_time()) >
+        25000000) {  // 25s timeout
       uart_log("Timeout waiting for image data");
       return -1;
     }
     if (uart_is_readable(UART_ID)) {
       buffer[received++] = uart_getc(UART_ID);
+      if (received % 4096 == 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Received %u/%u bytes", (unsigned)received,
+                 (unsigned)size);
+        uart_log(msg);
+      }
     }
   }
   uart_log("Image received");
@@ -133,70 +136,20 @@ void usb_log(const char* msg) {
   printf("%s\n", msg);
 }
 
-// Wait for handshake reply on UART1 (now UART_ID)
-bool wait_for_handshake_reply(const char* expected, uint timeout_ms) {
-  char buf[64] = {0};
-  uint idx = 0;
-  absolute_time_t start = get_absolute_time();
-  while (to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(start) <
-         timeout_ms) {
-    if (uart_is_readable(UART_ID)) {
-      char c = uart_getc(UART_ID);
-      if (idx < sizeof(buf) - 1)
-        buf[idx++] = c;
-      buf[idx] = 0;  // Null-terminate for strstr
-      if (strstr(buf,
-                 "HELLO RP2040")) {  // Accept substring, ignore line ending
-        usb_log("Received reply: HELLO RP2040");
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 int main(void) {
   stdio_init_all();  // Initialize USB serial
   if (DEV_Module_Init() != 0) {
     return -1;
   }
-  // Initialize UART1 for handshake and image transfer
+  // Initialize UART1 for image transfer
   uart_init(UART_ID, UART_BAUD);
   gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
   gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
   sleep_ms(1000);  // Wait for USB-CDC
 
-  int handshake_ok = 0;
-  int fallback_displayed = 0;
-  // Handshake loop
-  while (!handshake_ok) {
-    int handshake_attempts = 0;
-    for (int attempt = 1; attempt <= HANDSHAKE_RETRIES; ++attempt) {
-      usb_log("Sending handshake...");
-      uart_puts(UART_ID, HANDSHAKE_MSG);
-      if (wait_for_handshake_reply(HANDSHAKE_REPLY, HANDSHAKE_TIMEOUT_MS)) {
-        usb_log("Handshake complete");
-        handshake_ok = 1;
-        break;
-      } else {
-        usb_log("Timeout waiting for reply, retrying...");
-        sleep_ms(500);
-      }
-      handshake_attempts++;
-      if (attempt == HANDSHAKE_RETRIES && !handshake_ok) {
-        usb_log("Handshake failed after retries.");
-        if (!fallback_displayed) {
-          display_fallback_image();
-          fallback_displayed = 1;
-        }
-      }
-    }
-  }
-
   uart_log("System started");
   uint8_t image_buffer[IMAGE_SIZE];
-  int error = 0;
-  fallback_displayed = 0;
+  int fallback_displayed = 0;
   int last_status_ok = 0;  // 1=ok, 0=error
   while (1) {
     // LED status based on last result
@@ -205,31 +158,46 @@ int main(void) {
     } else {
       led_status_error();
     }
-    if (!error) {
-      if (request_and_receive_image(image_buffer, IMAGE_SIZE) == 0) {
-        // Indicate transfer in progress
-        led_status_transferring();
-        uart_log("Displaying image");
-        // TODO: implement EPD_7in3f_display_BMP_from_buffer(image_buffer)
-        // EPD_7in3f_display_BMP_from_buffer(image_buffer);
-        uart_log("Image displayed");
-        last_status_ok = 1;
-        led_status_off();
-      } else {
-        if (!fallback_displayed) {
-          uart_log("Image receive failed, displaying fallback image");
-          display_fallback_image();
-          uart_log("Fallback image displayed");
-          fallback_displayed = 1;
-        } else {
-          uart_log("Image receive failed, fallback already displayed");
-        }
-        last_status_ok = 0;
+    // Try to request and receive image
+    if (request_and_receive_image(image_buffer, IMAGE_SIZE) == 0) {
+      // Indicate transfer in progress
+      led_status_transferring();
+      uart_log("Displaying image");
+      // Debug: print first 32 bytes of image_buffer
+      char hexbuf[3 * 32 + 1] = {0};
+      for (int i = 0; i < 32; ++i) {
+        snprintf(hexbuf + i * 3, 4, "%02X ", image_buffer[i]);
+      }
+      uart_log("First 32 bytes of image_buffer:");
+      uart_log(hexbuf);
+      EPD_7IN3F_Init();
+      uart_log("EPD_7IN3F_Init() done");
+      EPD_7IN3F_Display(image_buffer);
+      uart_log("EPD_7IN3F_Display() done");
+      EPD_7IN3F_Sleep();
+      uart_log("EPD_7IN3F_Sleep() done");
+      uart_log("Image displayed");
+      last_status_ok = 1;
+      led_status_off();
+      fallback_displayed = 0;
+      // Wait 5 minutes before next request
+      for (int i = 0; i < 300; ++i) {
+        sleep_ms(1000);
       }
     } else {
-      uart_log("Retrying after error");
-      DEV_Delay_ms(10000);
-      error = 0;
+      if (!fallback_displayed) {
+        uart_log("Image receive failed, displaying fallback image");
+        display_fallback_image();
+        uart_log("Fallback image displayed");
+        fallback_displayed = 1;
+      } else {
+        uart_log("Image receive failed, fallback already displayed");
+      }
+      last_status_ok = 0;
+      // Retry every 5 seconds
+      for (int i = 0; i < 5; ++i) {
+        sleep_ms(1000);
+      }
     }
   }
 }
