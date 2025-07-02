@@ -6,20 +6,16 @@
 #include "pico/stdlib.h"
 
 #define Mode 3
-#define UART_ID uart0
+#define UART_ID uart1
 #define UART_BAUD 115200
-#define UART_TX_PIN 0
-#define UART_RX_PIN 1
+#define UART_TX_PIN 4
+#define UART_RX_PIN 5
 #define IMAGE_SIZE (800 * 480 / 8)  // Example for 1bpp 800x480
 
 #include "lib/Fonts/fonts.h"
 #include "lib/GUI/GUI_Paint.h"
 #include "lib/e-Paper/EPD_7in3f.h"
 
-#define UART1_ID uart1
-#define UART1_BAUD 115200
-#define UART1_TX_PIN 4
-#define UART1_RX_PIN 5
 #define HANDSHAKE_MSG "HELLO ESP32\n"
 #define HANDSHAKE_REPLY "HELLO RP2040\n"
 #define HANDSHAKE_TIMEOUT_MS 2000
@@ -137,18 +133,20 @@ void usb_log(const char* msg) {
   printf("%s\n", msg);
 }
 
-// Wait for handshake reply on UART1
+// Wait for handshake reply on UART1 (now UART_ID)
 bool wait_for_handshake_reply(const char* expected, uint timeout_ms) {
   char buf[64] = {0};
   uint idx = 0;
   absolute_time_t start = get_absolute_time();
   while (to_ms_since_boot(get_absolute_time()) - to_ms_since_boot(start) <
          timeout_ms) {
-    if (uart_is_readable(UART1_ID)) {
-      char c = uart_getc(UART1_ID);
+    if (uart_is_readable(UART_ID)) {
+      char c = uart_getc(UART_ID);
       if (idx < sizeof(buf) - 1)
         buf[idx++] = c;
-      if (strstr(buf, expected)) {
+      buf[idx] = 0;  // Null-terminate for strstr
+      if (strstr(buf,
+                 "HELLO RP2040")) {  // Accept substring, ignore line ending
         usb_log("Received reply: HELLO RP2040");
         return true;
       }
@@ -162,36 +160,43 @@ int main(void) {
   if (DEV_Module_Init() != 0) {
     return -1;
   }
-  // Initialize UART0 for image transfer (legacy logic)
+  // Initialize UART1 for handshake and image transfer
   uart_init(UART_ID, UART_BAUD);
   gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
   gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-  // Initialize UART1 for handshake with ESP32
-  uart_init(UART1_ID, UART1_BAUD);
-  gpio_set_function(UART1_TX_PIN, GPIO_FUNC_UART);
-  gpio_set_function(UART1_RX_PIN, GPIO_FUNC_UART);
   sleep_ms(1000);  // Wait for USB-CDC
 
-  // Handshake logic
-  for (int attempt = 1; attempt <= HANDSHAKE_RETRIES; ++attempt) {
-    usb_log("Sending handshake...");
-    uart_puts(UART1_ID, HANDSHAKE_MSG);
-    if (wait_for_handshake_reply(HANDSHAKE_REPLY, HANDSHAKE_TIMEOUT_MS)) {
-      usb_log("Handshake complete");
-      break;
-    } else {
-      usb_log("Timeout waiting for reply, retrying...");
-      sleep_ms(500);
-    }
-    if (attempt == HANDSHAKE_RETRIES) {
-      usb_log("Handshake failed after retries.");
+  int handshake_ok = 0;
+  int fallback_displayed = 0;
+  // Handshake loop
+  while (!handshake_ok) {
+    int handshake_attempts = 0;
+    for (int attempt = 1; attempt <= HANDSHAKE_RETRIES; ++attempt) {
+      usb_log("Sending handshake...");
+      uart_puts(UART_ID, HANDSHAKE_MSG);
+      if (wait_for_handshake_reply(HANDSHAKE_REPLY, HANDSHAKE_TIMEOUT_MS)) {
+        usb_log("Handshake complete");
+        handshake_ok = 1;
+        break;
+      } else {
+        usb_log("Timeout waiting for reply, retrying...");
+        sleep_ms(500);
+      }
+      handshake_attempts++;
+      if (attempt == HANDSHAKE_RETRIES && !handshake_ok) {
+        usb_log("Handshake failed after retries.");
+        if (!fallback_displayed) {
+          display_fallback_image();
+          fallback_displayed = 1;
+        }
+      }
     }
   }
 
   uart_log("System started");
   uint8_t image_buffer[IMAGE_SIZE];
   int error = 0;
-  int fallback_displayed = 0;
+  fallback_displayed = 0;
   int last_status_ok = 0;  // 1=ok, 0=error
   while (1) {
     // LED status based on last result

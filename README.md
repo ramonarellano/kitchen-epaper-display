@@ -3,21 +3,29 @@
 [Original PhotoPainter Repository](https://github.com/waveshareteam/PhotoPainter)
 
 ## Overview
-This project provides firmware for a Raspberry Pi Pico (or compatible RP2040 board) that receives images from an ESP32 over UART and displays them on a Waveshare 7.3" e-Paper display. The firmware also provides status feedback via onboard LEDs and logs messages to both UART and USB serial.
+This project provides firmware for a Raspberry Pi Pico (RP2040) that receives images from an ESP32 over UART and displays them on a Waveshare 7.3" e-Paper display. The firmware provides robust status feedback via onboard LEDs and logs messages to both UART and USB serial.
 
 ## Main Features
 
+- **UART Handshake with ESP32:**
+  - Uses UART1 (GPIO 4/5) for both handshake and image transfer: Pico sends `HELLO ESP32`, waits for `HELLO RP2040` reply, then requests image data over the same connection.
+  - Retries handshake up to 5 times, then displays a fallback image if unsuccessful.
+  - Continues retrying handshake in the background until it succeeds, then proceeds to image transfer.
+
 - **Image Transfer via UART:**
-  - The Pico requests an image from the ESP32 by sending `SENDIMG` over UART.
-  - It waits for the image data to be received into a buffer (with a 5-second timeout).
-  - If successful, the image is displayed on the e-Paper display (custom display function to be implemented).
+  - Uses UART1 (GPIO 4/5) for image transfer.
+  - Pico requests an image from the ESP32 by sending `SENDIMG` over UART1.
+  - Waits for image data (with a 5-second timeout).
+  - If successful, the image is displayed on the e-Paper display.
   - If image reception fails, a fallback message is shown on the display.
 
 - **Fallback Display:**
-  - If no image is received, the display shows "NO SERIAL CONNECTION" as a status message.
+  - If handshake or image transfer fails, the display shows "NO SERIAL CONNECTION" as a status message.
 
-- **LED Status:**
-  - LEDs indicate normal operation (single blink) or error state (triple blink).
+- **LED Status Patterns:**
+  - **Slow blink (200ms ON, 1800ms OFF):** Last handshake or transfer was successful.
+  - **Fast blink (200ms ON, 300ms OFF):** Last handshake or transfer failed.
+  - **Solid ON:** Image transfer in progress.
 
 - **Logging:**
   - Logs are sent to both UART and USB serial for debugging and monitoring.
@@ -52,12 +60,19 @@ This project provides firmware for a Raspberry Pi Pico (or compatible RP2040 boa
 
 ### Serial Communication
 
-- The firmware communicates with an ESP32 over UART0 (GPIO 0/1 at 115200 baud).
-- USB serial is also available for logging and debugging.
+- **UART1 (GPIO 4/5):** Handshake and image transfer with ESP32 at 115200 baud.
+- **USB serial:** Available for logging and debugging.
+
+### LED Status Reference
+
+- **Slow blink:** Last handshake or image transfer was successful.
+- **Fast blink:** Last handshake or image transfer failed.
+- **Solid ON:** Image transfer in progress.
 
 ### Notes
 
 - If you do not see your board as a serial device after flashing, ensure you have pressed the **RUN** button after copying the UF2 file.
 - The image display function is a placeholder and should be implemented to match your image format and display requirements.
+- The firmware will keep retrying the handshake with the ESP32 until it succeeds, even after displaying the fallback image.
 
 ---
