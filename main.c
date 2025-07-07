@@ -83,13 +83,37 @@ size_t last_receive_count = 0;
 int request_and_receive_image(uint8_t* buffer, size_t size) {
   uart_log("Requesting image from ESP32");
   uart_puts(UART_ID, "SENDIMG\n");
+
+  // Wait for ACK from ESP32 (up to 1 second)
+  uart_log("Waiting for ACK from ESP32");
+  char ack_buf[8] = {0};
+  size_t ack_idx = 0;
+  absolute_time_t ack_start = get_absolute_time();
+  while (absolute_time_diff_us(ack_start, get_absolute_time()) <
+         1000000) {  // 1s timeout
+    if (uart_is_readable(UART_ID)) {
+      char c = uart_getc(UART_ID);
+      if (c == '\n' || ack_idx >= sizeof(ack_buf) - 1) {
+        ack_buf[ack_idx] = '\0';
+        break;
+      }
+      ack_buf[ack_idx++] = c;
+    }
+  }
+  if (strcmp(ack_buf, "ACK") != 0) {
+    uart_log("No ACK from ESP32, aborting image receive");
+    last_receive_count = 0;
+    return -1;
+  }
+  uart_log("ACK received, waiting for image data");
+
   size_t received = 0;
   absolute_time_t start = get_absolute_time();
   absolute_time_t last_log = start;
-  // Increase timeout to 25 seconds for large image
+  // Increase timeout to 250 seconds for large image
   while (received < size) {
     absolute_time_t now = get_absolute_time();
-    if (absolute_time_diff_us(start, now) > 250000000) {  // 250s timeout
+    if (absolute_time_diff_us(start, now) > 120000000) {  // 120s timeout
       uart_log("Timeout waiting for image data");
       last_receive_count = received;
       return -1;
@@ -202,9 +226,15 @@ int main(void) {
       last_status_ok = 1;
       led_status_off();
       fallback_displayed = 0;
-      // Wait 5 minutes before next request
-      for (int i = 0; i < 300; ++i) {
-        sleep_ms(1000);
+      // Wait 5 minutes before next request, logging time remaining every minute
+      for (int i = 5; i > 0; --i) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Next update in %d minute%s...", i,
+                 i == 1 ? "" : "s");
+        uart_log(msg);
+        for (int j = 0; j < 60; ++j) {
+          sleep_ms(1000);
+        }
       }
     } else {
       uart_log("Image reception failed, will retry.");
