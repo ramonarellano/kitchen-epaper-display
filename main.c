@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>  // For strstr
 #include "hardware/uart.h"
@@ -5,54 +6,48 @@
 #include "pico/stdio.h"
 #include "pico/stdlib.h"
 
-#define Mode 3
+// ---------------------------------------------------------------------------
+// Configuration (all tunable constants live here)
+// ---------------------------------------------------------------------------
+
+// General
+
+// UART configuration
 #define UART_ID uart1
 #define UART_BAUD 115200
 #define UART_TX_PIN 4
 #define UART_RX_PIN 5
-#define IMAGE_SIZE 192000  // 192,000 bytes for 800x480 (Waveshare 7-color)
 
-// Time between each image request in minutes
-#define IMAGE_REQUEST_INTERVAL_MINUTES 5
+// Image buffer size: 800x480 7-color (example); adjust if using different
+// display.
+#define IMAGE_SIZE 192000
+
+// How often to request an image (in minutes)
+#define IMAGE_REQUEST_INTERVAL_MINUTES 60
+
+// Timeouts (milliseconds)
+#define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
+#define SOF_TIMEOUT_MS 60000    // wait up to 60s for start-of-frame
+#define DATA_TIMEOUT_MS 180000  // wait up to 180s for full image data
+#define RETRY_WAIT_MS 30000     // wait 30s after a timeout before retry
+#define POST_SEND_DELAY_MS 20   // small delay after sending request
+
+// Buffer sizes
+#define ACK_BUFFER_SIZE 64
+
+// Logging helper (short wrapper)
+#define LOG(msg) uart_log(msg)
 
 #include "lib/Fonts/fonts.h"
 #include "lib/GUI/GUI_Paint.h"
 #include "lib/e-Paper/EPD_7in3f.h"
 
-float measureVBAT(void) {
-  float Voltage = 0.0;
-  const float conversion_factor = 3.3f / (1 << 12);
-  uint16_t result = adc_read();
-  Voltage = result * conversion_factor * 3;
-  printf("Raw value: 0x%03x, voltage: %f V\n", result, Voltage);
-  return Voltage;
-}
+// ---------------------------------------------------------------------------
+// End configuration
+// ---------------------------------------------------------------------------
 
-void chargeState_callback() {
-  if (DEV_Digital_Read(VBUS)) {
-    if (!DEV_Digital_Read(CHARGE_STATE)) {  // is charging
-      ledCharging();
-    } else {  // charge complete
-      ledCharged();
-    }
-  }
-}
-
-void led_ok_pattern(void) {
-  DEV_Digital_Write(LED_ACT, 1);
-  DEV_Delay_ms(100);
-  DEV_Digital_Write(LED_ACT, 0);
-  DEV_Delay_ms(400);
-}
-void led_error_pattern(void) {
-  for (int i = 0; i < 3; i++) {
-    DEV_Digital_Write(LED_ACT, 1);
-    DEV_Delay_ms(100);
-    DEV_Digital_Write(LED_ACT, 0);
-    DEV_Delay_ms(100);
-  }
-  DEV_Delay_ms(700);
-}
+// (Removed unused helper functions: battery measurement and charge callback,
+// and short LED patterns. LED status functions still used elsewhere.)
 
 // LED status patterns
 void led_status_ok(void) {
@@ -77,45 +72,156 @@ void led_status_off(void) {
   DEV_Digital_Write(LED_ACT, 0);
 }
 
+/**
+ * uart_log
+ * Simple logging helper that writes to USB serial (stdio).
+ */
 void uart_log(const char* msg) {
-  printf("LOG: %s\r\n", msg);  // Only log to USB serial
+  printf("LOG: %s\r\n", msg);
 }
 
 size_t last_receive_count = 0;
 
-int request_and_receive_image(uint8_t* buffer, size_t size) {
-  uart_log("Requesting image from ESP32");
-  uart_puts(UART_ID, "SENDIMG\n");
+// Forward declarations for helper functions
+static void flush_rx(void);
+static void send_image_request(void);
+static int contains_ack(const char* s);
+static int read_ack_with_timeout(int32_t timeout_ms);
+static int wait_for_sof(int32_t timeout_ms);
+static int read_image_size(size_t* out_size);
+static int receive_image_data(uint8_t* buffer,
+                              size_t buf_size,
+                              size_t img_size);
 
-  // Wait for ACK from ESP32 (up to 5 seconds)
-  uart_log("Waiting for ACK from ESP32");
-  char ack_buf[8] = {0};
-  size_t ack_idx = 0;
-  absolute_time_t ack_start = get_absolute_time();
-  while (absolute_time_diff_us(ack_start, get_absolute_time()) <
-         5000000) {  // 5s timeout
-    if (uart_is_readable(UART_ID)) {
-      char c = uart_getc(UART_ID);
-      if (c == '\n' || ack_idx >= sizeof(ack_buf) - 1) {
-        ack_buf[ack_idx] = '\0';
-        break;
-      }
-      ack_buf[ack_idx++] = c;
-    }
+/**
+ * request_and_receive_image
+ * High-level flow:
+ *  - send SENDIMG request
+ *  - wait for ACK (robust, tolerant)
+ *  - wait for SOF marker
+ *  - read image size
+ *  - read image data
+ * Returns 0 on success, -1 on fatal error, -2 if timed out and caller should
+ * retry (we already waited RETRY_WAIT_MS inside this function in that case).
+ */
+int request_and_receive_image(uint8_t* buffer, size_t size) {
+  LOG("Requesting image from ESP32");
+
+  // Clear any stale bytes before starting
+  flush_rx();
+
+  // Send request and give peer a short time to prepare
+  send_image_request();
+  sleep_ms(POST_SEND_DELAY_MS);
+
+  // Wait for ACK
+  LOG("Waiting for ACK from ESP32");
+  if (read_ack_with_timeout(ACK_TIMEOUT_MS) != 0) {
+    LOG("No ACK received within timeout - waiting before retry");
+    last_receive_count = 0;
+    sleep_ms(RETRY_WAIT_MS);
+    return -2;
   }
-  if (strcmp(ack_buf, "ACK") != 0) {
-    uart_log("No ACK from ESP32, aborting image receive");
+
+  // Wait for frame start marker (SOF)
+  LOG("ACK received, waiting for SOF marker");
+  if (wait_for_sof(SOF_TIMEOUT_MS) != 0) {
+    LOG("SOF not found within timeout - waiting before retry");
+    last_receive_count = 0;
+    sleep_ms(RETRY_WAIT_MS);
+    return -2;
+  }
+
+  LOG("SOF marker received, reading image size header");
+  size_t img_size = 0;
+  if (read_image_size(&img_size) != 0) {
+    LOG("Failed to read image size header");
     last_receive_count = 0;
     return -1;
   }
-  uart_log("ACK received, waiting for SOF marker");
+  char size_msg[64];
+  snprintf(size_msg, sizeof(size_msg), "Image size header: %u bytes",
+           (unsigned)img_size);
+  LOG(size_msg);
 
-  // Wait for SOF marker: 0xAA 0x55 0xAA 0x55
+  if (img_size > size) {
+    LOG("Image size in header exceeds buffer size, aborting");
+    last_receive_count = 0;
+    return -1;
+  }
+
+  LOG("Receiving image data");
+  int rc = receive_image_data(buffer, size, img_size);
+  if (rc != 0) {
+    // receive_image_data already logs and waits when appropriate
+    last_receive_count = (rc > 0) ? (size_t)rc : 0;
+    return -2;
+  }
+
+  LOG("Image received");
+  last_receive_count = img_size;
+  return 0;
+}
+
+// -------------------- Helper implementations --------------------
+
+// Discard any available bytes on RX
+static void flush_rx(void) {
+  while (uart_is_readable(UART_ID)) {
+    (void)uart_getc(UART_ID);
+  }
+}
+
+// Send image request string
+static void send_image_request(void) {
+  uart_puts(UART_ID, "SENDIMG\n");
+}
+
+// Simple substring test for ACK (case-sensitive, matches anywhere)
+static int contains_ack(const char* s) {
+  if (!s)
+    return 0;
+  return strstr(s, "ACK") != NULL;
+}
+
+// Read until newline or timeout. Returns 0 if an ACK was seen, -1 otherwise.
+static int read_ack_with_timeout(int32_t timeout_ms) {
+  char ack_buf[ACK_BUFFER_SIZE];
+  size_t idx = 0;
+  absolute_time_t start = get_absolute_time();
+  const int64_t timeout_us = (int64_t)timeout_ms * 1000;
+  while (absolute_time_diff_us(start, get_absolute_time()) < timeout_us) {
+    if (uart_is_readable(UART_ID)) {
+      int c = uart_getc(UART_ID);
+      if (c < 0)
+        continue;
+      if (idx < sizeof(ack_buf) - 1)
+        ack_buf[idx++] = (char)c;
+      ack_buf[idx] = '\0';
+      if (c == '\n') {
+        // strip trailing CR/LF
+        while (idx > 0 &&
+               (ack_buf[idx - 1] == '\n' || ack_buf[idx - 1] == '\r')) {
+          ack_buf[--idx] = '\0';
+        }
+        if (contains_ack(ack_buf))
+          return 0;
+        idx = 0;
+        ack_buf[0] = '\0';
+      }
+    }
+  }
+  return -1;
+}
+
+// Wait for SOF marker 0xAA 0x55 0xAA 0x55. Returns 0 on success, -1 on timeout.
+static int wait_for_sof(int32_t timeout_ms) {
   uint8_t sof[4] = {0};
   size_t sof_idx = 0;
-  absolute_time_t sof_start = get_absolute_time();
-  while (sof_idx < 4 && absolute_time_diff_us(sof_start, get_absolute_time()) <
-                            60000000) {  // 60s timeout
+  absolute_time_t start = get_absolute_time();
+  const int64_t timeout_us = (int64_t)timeout_ms * 1000;
+  while (sof_idx < 4 &&
+         absolute_time_diff_us(start, get_absolute_time()) < timeout_us) {
     if (uart_is_readable(UART_ID)) {
       uint8_t c = uart_getc(UART_ID);
       sof[sof_idx] = c;
@@ -123,55 +229,54 @@ int request_and_receive_image(uint8_t* buffer, size_t size) {
           (sof_idx == 2 && c == 0xAA) || (sof_idx == 3 && c == 0x55)) {
         sof_idx++;
       } else {
-        // Reset if not matching expected SOF sequence
         sof_idx = (c == 0xAA) ? 1 : 0;
       }
     }
   }
-  if (sof_idx < 4) {
-    uart_log("Timeout or error waiting for SOF marker");
-    last_receive_count = 0;
-    return -1;
-  }
-  uart_log("SOF marker received, reading image size header");
+  return (sof_idx == 4) ? 0 : -1;
+}
 
-  // Read 4-byte image size header (big-endian)
-  uint8_t size_header[4];
-  size_t size_idx = 0;
-  while (size_idx < 4) {
+// Read 4-byte big-endian image size into out_size; returns 0 on success.
+static int read_image_size(size_t* out_size) {
+  if (!out_size)
+    return -1;
+  uint8_t header[4];
+  size_t idx = 0;
+  while (idx < 4) {
     if (uart_is_readable(UART_ID)) {
-      size_header[size_idx++] = uart_getc(UART_ID);
+      header[idx++] = uart_getc(UART_ID);
     }
   }
-  size_t img_size = (size_header[0] << 24) | (size_header[1] << 16) |
-                    (size_header[2] << 8) | size_header[3];
-  char size_msg[64];
-  snprintf(size_msg, sizeof(size_msg), "Image size header: %u bytes",
-           (unsigned)img_size);
-  uart_log(size_msg);
-  if (img_size > size) {
-    uart_log("Image size in header exceeds buffer size, aborting");
-    last_receive_count = 0;
-    return -1;
-  }
+  *out_size =
+      (header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
+  return 0;
+}
 
-  uart_log("Receiving image data");
+// Receive image data with a DATA_TIMEOUT_MS overall timeout.
+// Returns 0 on success, -1 on timeout. On partial receive, returns -1 but
+// last_receive_count is populated.
+static int receive_image_data(uint8_t* buffer,
+                              size_t buf_size,
+                              size_t img_size) {
+  if (!buffer)
+    return -1;
   size_t received = 0;
   absolute_time_t start = get_absolute_time();
   absolute_time_t last_log = start;
+  const int64_t timeout_us = (int64_t)DATA_TIMEOUT_MS * 1000;
   while (received < img_size) {
     absolute_time_t now = get_absolute_time();
-    if (absolute_time_diff_us(start, now) > 180000000) {  // 180s timeout
-      uart_log("Timeout waiting for image data");
+    if (absolute_time_diff_us(start, now) > timeout_us) {
+      LOG("Timeout waiting for image data");
       last_receive_count = received;
+      sleep_ms(RETRY_WAIT_MS);
       return -1;
     }
-    // Log every 2 seconds while waiting
     if (absolute_time_diff_us(last_log, now) > 2000000) {
       char msg[64];
       snprintf(msg, sizeof(msg), "Still waiting for image data... %u/%u bytes",
                (unsigned)received, (unsigned)img_size);
-      uart_log(msg);
+      LOG(msg);
       last_log = now;
     }
     if (uart_is_readable(UART_ID)) {
@@ -180,55 +285,17 @@ int request_and_receive_image(uint8_t* buffer, size_t size) {
         char msg[64];
         snprintf(msg, sizeof(msg), "Received %u/%u bytes", (unsigned)received,
                  (unsigned)img_size);
-        uart_log(msg);
+        LOG(msg);
       }
     }
   }
-  uart_log("Image received");
-  last_receive_count = received;
   return 0;
 }
 
-const uint8_t fallback_image[IMAGE_SIZE] = {[0 ... IMAGE_SIZE - 1] = 0xFF};
+// Fallback image logic removed per request; timeouts now wait 30s and return -2
+// to indicate a retry should be attempted by the caller.
 
-void display_fallback_image(void) {
-  uart_log("Resetting e-Paper display before fallback image");
-  // Try to manually toggle the reset pin if available
-#ifdef EPD_7IN3F_RST_PIN
-  gpio_init(EPD_7IN3F_RST_PIN);
-  gpio_set_dir(EPD_7IN3F_RST_PIN, GPIO_OUT);
-  gpio_put(EPD_7IN3F_RST_PIN, 0);
-  sleep_ms(200);
-  gpio_put(EPD_7IN3F_RST_PIN, 1);
-  sleep_ms(200);
-#endif
-  uart_log("Initializing e-Paper display for fallback image");
-  EPD_7IN3F_Init();
-  UDOUBLE Imagesize = ((EPD_7IN3F_WIDTH % 2 == 0) ? (EPD_7IN3F_WIDTH / 2)
-                                                  : (EPD_7IN3F_WIDTH / 2 + 1)) *
-                      EPD_7IN3F_HEIGHT;
-  UBYTE* BlackImage = (UBYTE*)malloc(Imagesize);
-  if (!BlackImage) {
-    uart_log("Failed to allocate memory for fallback image");
-    return;
-  }
-  Paint_NewImage(BlackImage, EPD_7IN3F_WIDTH, EPD_7IN3F_HEIGHT, 0,
-                 EPD_7IN3F_WHITE);
-  Paint_SetScale(7);
-  Paint_SelectImage(BlackImage);
-  Paint_Clear(EPD_7IN3F_WHITE);
-  Paint_DrawString_EN(100, 220, "NO SERIAL CONNECTION", &Font24,
-                      EPD_7IN3F_BLACK, EPD_7IN3F_WHITE);
-  uart_log("Displaying fallback image on e-Paper");
-  EPD_7IN3F_Display(BlackImage);
-  EPD_7IN3F_Sleep();
-  free(BlackImage);
-}
-
-// Helper: log to USB serial only
-void usb_log(const char* msg) {
-  printf("%s\n", msg);
-}
+// usb_log removed (unused). Use uart_log(...) where needed.
 
 int main(void) {
   stdio_init_all();  // Initialize USB serial
@@ -243,7 +310,6 @@ int main(void) {
 
   uart_log("System started");
   uint8_t image_buffer[IMAGE_SIZE];
-  int fallback_displayed = 0;
   int last_status_ok = 0;  // 1=ok, 0=error
   while (1) {
     // LED status based on last result
@@ -253,7 +319,8 @@ int main(void) {
       led_status_error();
     }
     // Try to request and receive image
-    if (request_and_receive_image(image_buffer, IMAGE_SIZE) == 0) {
+    int recv_result = request_and_receive_image(image_buffer, IMAGE_SIZE);
+    if (recv_result == 0) {
       // Indicate transfer in progress
       led_status_transferring();
       uart_log("Displaying image");
@@ -273,7 +340,6 @@ int main(void) {
       uart_log("Image displayed");
       last_status_ok = 1;
       led_status_off();
-      fallback_displayed = 0;
       // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request, logging time
       // remaining every minute
       for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
@@ -285,19 +351,14 @@ int main(void) {
           sleep_ms(1000);
         }
       }
+    } else if (recv_result == -2) {
+      // request_and_receive_image already logged the timeout and waited 30s.
+      uart_log("Retrying image request after timeout wait");
+      last_status_ok = 0;
+      // Continue to start the request sequence again immediately
+      continue;
     } else {
       uart_log("Image reception failed, will retry.");
-      if (!fallback_displayed) {
-        uart_log("Image receive failed, displaying fallback image (entering)");
-        // Always display fallback image on first failure, regardless of
-        // last_receive_count
-        display_fallback_image();
-        uart_log("Fallback image displayed (exiting)");
-        sleep_ms(1000);  // Give hardware time to settle
-        fallback_displayed = 1;
-      } else {
-        uart_log("Image receive failed, fallback already displayed");
-      }
       last_status_ok = 0;
       // Retry every 5 seconds
       for (int i = 0; i < 5; ++i) {
