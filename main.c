@@ -23,13 +23,13 @@
 #define IMAGE_SIZE 192000
 
 // How often to request an image (in minutes)
-#define IMAGE_REQUEST_INTERVAL_MINUTES 60
+#define IMAGE_REQUEST_INTERVAL_MINUTES 3
 
 // Timeouts (milliseconds)
 #define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
 #define SOF_TIMEOUT_MS 60000    // wait up to 60s for start-of-frame
 #define DATA_TIMEOUT_MS 180000  // wait up to 180s for full image data
-#define RETRY_WAIT_MS 30000     // wait 30s after a timeout before retry
+#define RETRY_WAIT_MS 3000     // wait 30s after a timeout before retry
 #define POST_SEND_DELAY_MS 20   // small delay after sending request
 
 // Buffer sizes
@@ -331,12 +331,27 @@ int main(void) {
       }
       uart_log("First 32 bytes of image_buffer:");
       uart_log(hexbuf);
-      EPD_7IN3F_Init();
-      uart_log("EPD_7IN3F_Init() done");
-      EPD_7IN3F_Display(image_buffer);
-      uart_log("EPD_7IN3F_Display() done");
-      EPD_7IN3F_Sleep();
-      uart_log("EPD_7IN3F_Sleep() done");
+  EPD_7IN3F_Init();
+  uart_log("EPD_7IN3F_Init() done");
+  // Log a simple checksum so we can verify the buffer changes between
+  // updates. This helps detect whether the same image is being sent.
+  unsigned long img_sum = 0;
+  for (size_t _i = 0; _i < 32 && _i < IMAGE_SIZE; ++_i) img_sum += image_buffer[_i];
+  char chkmsg[64];
+  snprintf(chkmsg, sizeof(chkmsg), "Image checksum (first 32 bytes): %lu", img_sum);
+  uart_log(chkmsg);
+  EPD_7IN3F_Display(image_buffer);
+  uart_log("EPD_7IN3F_Display() done");
+  // Give the panel time to finish refresh before entering deep-sleep.
+  // In some hardware/driver combos an immediate sleep can prevent the
+  // visible update on subsequent refreshes.
+  sleep_ms(5000);
+#if !defined(DISABLE_DISPLAY_SLEEP)
+  EPD_7IN3F_Sleep();
+  uart_log("EPD_7IN3F_Sleep() done");
+#else
+  uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
+#endif
       uart_log("Image displayed");
       last_status_ok = 1;
       led_status_off();
