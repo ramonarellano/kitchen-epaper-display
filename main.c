@@ -388,6 +388,13 @@ int main(void) {
 #if !defined(DISABLE_DISPLAY_SLEEP)
   EPD_7IN3F_Sleep();
   uart_log("EPD_7IN3F_Sleep() done");
+#if 1
+  // We just put the display into deep-sleep. Clear the last_display_sum so
+  // the next received image will be actively re-displayed even if it's
+  // byte-for-byte identical to the previous one. Some panels require a
+  // full re-init/display cycle after deep-sleep to visibly update.
+  last_display_sum = 0;
+#endif
 #else
   uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
 #endif
