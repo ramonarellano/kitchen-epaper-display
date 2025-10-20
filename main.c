@@ -23,7 +23,7 @@
 #define IMAGE_SIZE 192000
 
 // How often to request an image (in minutes)
-#define IMAGE_REQUEST_INTERVAL_MINUTES 60
+#define IMAGE_REQUEST_INTERVAL_MINUTES 5
 
 // Timeouts (milliseconds)
 #define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
@@ -335,8 +335,9 @@ int main(void) {
       }
       uart_log("First 32 bytes of image_buffer:");
       uart_log(hexbuf);
-      // Log final received count so it's clear we read the whole image (not just
-      // the last periodic progress log which prints at 4096-byte intervals).
+      // Log final received count so it's clear we read the whole image (not
+      // just the last periodic progress log which prints at 4096-byte
+      // intervals).
       char finalrcv[64];
       snprintf(finalrcv, sizeof(finalrcv), "Final received: %u/%u bytes",
                (unsigned)last_receive_count, (unsigned)IMAGE_SIZE);
@@ -345,13 +346,15 @@ int main(void) {
       // Compute a simple checksum of the full received image to detect
       // identical images (avoid unnecessary redisplay which can be slow).
       unsigned long full_sum = 0;
-      for (size_t i = 0; i < last_receive_count; ++i) full_sum += image_buffer[i];
+      for (size_t i = 0; i < last_receive_count; ++i)
+        full_sum += image_buffer[i];
       char summsg[80];
       snprintf(summsg, sizeof(summsg), "Full image checksum: %lu", full_sum);
       uart_log(summsg);
 
       if (last_display_sum != 0 && full_sum == last_display_sum) {
-        uart_log("Image identical to last displayed image — skipping redisplay");
+        uart_log(
+            "Image identical to last displayed image — skipping redisplay");
         last_status_ok = 1;
         // wait IMAGE_REQUEST_INTERVAL_MINUTES before next request
         for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
@@ -378,19 +381,19 @@ int main(void) {
       uart_log(chkmsg);
       EPD_7IN3F_Display(image_buffer);
       uart_log("EPD_7IN3F_Display() done");
-  // Give the panel time to finish refresh before entering deep-sleep.
+      // Give the panel time to finish refresh before entering deep-sleep.
       // In some hardware/driver combos an immediate sleep can prevent the
       // visible update on subsequent refreshes.
       sleep_ms(5000);
-  if (!defined(DISABLE_DISPLAY_SLEEP)) {
-    EPD_7IN3F_Sleep();
-    uart_log("EPD_7IN3F_Sleep() done");
-  } else {
-    uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
-  }
+#if !defined(DISABLE_DISPLAY_SLEEP)
+  EPD_7IN3F_Sleep();
+  uart_log("EPD_7IN3F_Sleep() done");
+#else
+  uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
+#endif
 
-  // Remember checksum of last displayed image
-  last_display_sum = full_sum;
+      // Remember checksum of last displayed image
+      last_display_sum = full_sum;
       uart_log("Image displayed");
       last_status_ok = 1;
       led_status_off();
