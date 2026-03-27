@@ -23,7 +23,7 @@
 #define IMAGE_SIZE 192000
 
 // How often to request an image (in minutes)
-#define IMAGE_REQUEST_INTERVAL_MINUTES 5
+#define IMAGE_REQUEST_INTERVAL_MINUTES 60
 
 // Timeouts (milliseconds)
 #define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
@@ -386,17 +386,17 @@ int main(void) {
       // visible update on subsequent refreshes.
       sleep_ms(5000);
 #if !defined(DISABLE_DISPLAY_SLEEP)
-  EPD_7IN3F_Sleep();
-  uart_log("EPD_7IN3F_Sleep() done");
+      EPD_7IN3F_Sleep();
+      uart_log("EPD_7IN3F_Sleep() done");
 #if 1
-  // We just put the display into deep-sleep. Clear the last_display_sum so
-  // the next received image will be actively re-displayed even if it's
-  // byte-for-byte identical to the previous one. Some panels require a
-  // full re-init/display cycle after deep-sleep to visibly update.
-  last_display_sum = 0;
+      // We just put the display into deep-sleep. Clear the last_display_sum so
+      // the next received image will be actively re-displayed even if it's
+      // byte-for-byte identical to the previous one. Some panels require a
+      // full re-init/display cycle after deep-sleep to visibly update.
+      last_display_sum = 0;
 #endif
 #else
-  uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
+      uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
 #endif
 
       // Remember checksum of last displayed image
