@@ -29,7 +29,7 @@
 #define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
 #define SOF_TIMEOUT_MS 60000    // wait up to 60s for start-of-frame
 #define DATA_TIMEOUT_MS 180000  // wait up to 180s for full image data
-#define RETRY_WAIT_MS 3000      // wait 30s after a timeout before retry
+#define RETRY_WAIT_MS 30000     // wait 30s after a timeout before retry
 #define POST_SEND_DELAY_MS 20   // small delay after sending request
 
 // Buffer sizes
@@ -236,13 +236,20 @@ static int wait_for_sof(int32_t timeout_ms) {
   return (sof_idx == 4) ? 0 : -1;
 }
 
-// Read 4-byte big-endian image size into out_size; returns 0 on success.
+// Read 4-byte big-endian image size into out_size; returns 0 on success,
+// -1 on timeout (10 s).
 static int read_image_size(size_t* out_size) {
   if (!out_size)
     return -1;
   uint8_t header[4];
   size_t idx = 0;
+  absolute_time_t start = get_absolute_time();
+  const int64_t timeout_us = 10000000;  // 10 seconds
   while (idx < 4) {
+    if (absolute_time_diff_us(start, get_absolute_time()) > timeout_us) {
+      LOG("Timeout reading image size header");
+      return -1;
+    }
     if (uart_is_readable(UART_ID)) {
       header[idx++] = uart_getc(UART_ID);
     }
@@ -309,7 +316,7 @@ int main(void) {
   sleep_ms(1000);  // Wait for USB-CDC
 
   uart_log("System started");
-  uint8_t image_buffer[IMAGE_SIZE];
+  static uint8_t image_buffer[IMAGE_SIZE];
   int last_status_ok = 0;  // 1=ok, 0=error
   unsigned long last_display_sum = 0;
   while (1) {
