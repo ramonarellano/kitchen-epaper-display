@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>  // For strstr
 #include "hardware/uart.h"
@@ -34,6 +35,9 @@
 
 // Buffer sizes
 #define ACK_BUFFER_SIZE 64
+
+// Remote logging to ESP32 via UART (set to 0 to disable)
+#define PICO_UART_LOGGING 1
 
 // Logging helper (short wrapper)
 #define LOG(msg) uart_log(msg)
@@ -79,6 +83,50 @@ void led_status_off(void) {
 void uart_log(const char* msg) {
   printf("LOG: %s\r\n", msg);
 }
+
+// ---------------------------------------------------------------------------
+// Remote logging: buffer messages and send to ESP32 before next SENDIMG.
+// The ESP32 is in deep sleep during Pico processing, so we must defer
+// sending until right before the next image request, when the ESP32 is
+// awake and listening on Serial1.
+// ---------------------------------------------------------------------------
+#if PICO_UART_LOGGING
+#define PLOG_BUFFER_SIZE 512
+static char plog_buffer[PLOG_BUFFER_SIZE];
+static size_t plog_buffer_len = 0;
+
+static void plog(const char* msg) {
+  size_t needed = 5 + strlen(msg) + 1;  // "PLOG:" + msg + "\n"
+  if (plog_buffer_len + needed < PLOG_BUFFER_SIZE) {
+    plog_buffer_len +=
+        snprintf(plog_buffer + plog_buffer_len,
+                 PLOG_BUFFER_SIZE - plog_buffer_len, "PLOG:%s\n", msg);
+  }
+}
+
+static void plog_fmt(const char* fmt, ...) {
+  char tmp[128];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(tmp, sizeof(tmp), fmt, args);
+  va_end(args);
+  plog(tmp);
+}
+
+// Flush buffered PLOG lines to UART (call before SENDIMG)
+static void plog_flush(void) {
+  if (plog_buffer_len > 0) {
+    uart_puts(UART_ID, plog_buffer);
+    sleep_ms(100);  // let ESP32 process lines before SENDIMG
+    plog_buffer_len = 0;
+    plog_buffer[0] = '\0';
+  }
+}
+#else
+#define plog(msg) ((void)0)
+#define plog_fmt(...) ((void)0)
+#define plog_flush() ((void)0)
+#endif
 
 size_t last_receive_count = 0;
 
@@ -319,6 +367,7 @@ int main(void) {
   static uint8_t image_buffer[IMAGE_SIZE];
   int last_status_ok = 0;  // 1=ok, 0=error
   unsigned long last_display_sum = 0;
+  plog("BOOT");
   while (1) {
     // LED status based on last result
     if (last_status_ok) {
@@ -328,6 +377,10 @@ int main(void) {
     }
     // Clear image buffer to avoid leftover pixels from previous transfers
     memset(image_buffer, 0xFF, IMAGE_SIZE);
+
+    // Flush any buffered PLOG lines to ESP32 before sending SENDIMG.
+    // The ESP32 is awake and listening at this point.
+    plog_flush();
 
     // Try to request and receive image
     int recv_result = request_and_receive_image(image_buffer, IMAGE_SIZE);
@@ -360,6 +413,7 @@ int main(void) {
       uart_log(summsg);
 
       if (last_display_sum != 0 && full_sum == last_display_sum) {
+        plog_fmt("SKIP chk=%lu last=%lu", full_sum, last_display_sum);
         uart_log(
             "Image identical to last displayed image — skipping redisplay");
         last_status_ok = 1;
@@ -375,6 +429,9 @@ int main(void) {
         }
         continue;
       }
+      plog_fmt("DISPLAY chk=%lu bytes=%u", full_sum,
+               (unsigned)last_receive_count);
+      plog("EPD_INIT");
       EPD_7IN3F_Init();
       uart_log("EPD_7IN3F_Init() done");
       // Log a simple checksum so we can verify the buffer changes between
@@ -388,6 +445,7 @@ int main(void) {
       uart_log(chkmsg);
       EPD_7IN3F_Display(image_buffer);
       uart_log("EPD_7IN3F_Display() done");
+      plog("DISPLAY_DONE");
       // Give the panel time to finish refresh before entering deep-sleep.
       // In some hardware/driver combos an immediate sleep can prevent the
       // visible update on subsequent refreshes.
@@ -395,19 +453,16 @@ int main(void) {
 #if !defined(DISABLE_DISPLAY_SLEEP)
       EPD_7IN3F_Sleep();
       uart_log("EPD_7IN3F_Sleep() done");
-#if 1
-      // We just put the display into deep-sleep. Clear the last_display_sum so
-      // the next received image will be actively re-displayed even if it's
-      // byte-for-byte identical to the previous one. Some panels require a
-      // full re-init/display cycle after deep-sleep to visibly update.
+      plog("EPD_SLEEP last_sum=0");
+      // After deep-sleep, the panel needs a full re-init/display cycle to
+      // visibly update. Clear last_display_sum so the next image is always
+      // displayed, even if byte-identical.
       last_display_sum = 0;
-#endif
 #else
       uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
-#endif
-
       // Remember checksum of last displayed image
       last_display_sum = full_sum;
+#endif
       uart_log("Image displayed");
       last_status_ok = 1;
       led_status_off();
@@ -425,11 +480,13 @@ int main(void) {
     } else if (recv_result == -2) {
       // request_and_receive_image already logged the timeout and waited 30s.
       uart_log("Retrying image request after timeout wait");
+      plog("RECV_TIMEOUT retry");
       last_status_ok = 0;
       // Continue to start the request sequence again immediately
       continue;
     } else {
       uart_log("Image reception failed, will retry.");
+      plog("RECV_FAIL");
       last_status_ok = 0;
       // Retry every 5 seconds
       for (int i = 0; i < 5; ++i) {
