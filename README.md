@@ -56,6 +56,15 @@ This project provides firmware for a Raspberry Pi Pico (RP2040) that receives im
 
   - `DISABLE_DISPLAY_SLEEP` — if defined at compile time, the firmware will skip putting the e-Paper display into deep sleep immediately after `EPD_7IN3F_Display()`. Useful during debugging or when rapid successive updates are required. Provide this via your build system (e.g. add `-DDISABLE_DISPLAY_SLEEP` to the compiler flags or add a `target_compile_definitions` entry in your CMake config).
 
+  ## Remote Logging (PLOG)
+
+  The Pico can send diagnostic messages to the ESP32 over UART, which stores them in its persistent SPIFFS log. This allows full Pico-side visibility without a USB connection.
+
+  - Controlled by the `PICO_UART_LOGGING` flag at the top of `main.c` (set to `0` to disable).
+  - Messages are buffered during Pico processing and flushed to the ESP32 right before each `SENDIMG`, when the ESP32 is awake and listening.
+  - Events logged: `BOOT`, `EPD_INIT`, `DISPLAY chk=X bytes=Y`, `DISPLAY_DONE`, `EPD_SLEEP last_sum=0`, `SKIP chk=X last=Y`, `RECV_TIMEOUT retry`, `RECV_FAIL`.
+  - Retrieve logs from the ESP32 using `python3 fetch_and_clear_logs.py` in the ESP32 repo.
+
   ## Running the unit tests (host)
 
   There is a small host-buildable test to validate the ACK-detection logic.
