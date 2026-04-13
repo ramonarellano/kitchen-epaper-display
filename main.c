@@ -424,8 +424,8 @@ int main(void) {
       uart_log(summsg);
 
       if (last_display_sum != 0 && full_sum == last_display_sum) {
-        plog_fmt("SKIP chk=%lu last=%lu bytes=%u", full_sum,
-                 last_display_sum, (unsigned)last_receive_count);
+        plog_fmt("SKIP chk=%lu last=%lu bytes=%u", full_sum, last_display_sum,
+                 (unsigned)last_receive_count);
         uart_log(
             "Image identical to last displayed image — skipping redisplay");
         last_status_ok = 1;

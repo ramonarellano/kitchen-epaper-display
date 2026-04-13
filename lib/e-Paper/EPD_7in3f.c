@@ -38,14 +38,13 @@ volatile int epd_busy_force_released = 0;
 function :	Software reset
 parameter:
 ******************************************************************************/
-static void EPD_7IN3F_Reset(void)
-{
-    DEV_Digital_Write(EPD_RST_PIN, 1);
-    DEV_Delay_ms(20);
-    DEV_Digital_Write(EPD_RST_PIN, 0);
-    DEV_Delay_ms(5);
-    DEV_Digital_Write(EPD_RST_PIN, 1);
-    DEV_Delay_ms(20);
+static void EPD_7IN3F_Reset(void) {
+  DEV_Digital_Write(EPD_RST_PIN, 1);
+  DEV_Delay_ms(20);
+  DEV_Digital_Write(EPD_RST_PIN, 0);
+  DEV_Delay_ms(5);
+  DEV_Digital_Write(EPD_RST_PIN, 1);
+  DEV_Delay_ms(20);
 }
 
 /******************************************************************************
@@ -53,12 +52,11 @@ function :	send command
 parameter:
      Reg : Command register
 ******************************************************************************/
-static void EPD_7IN3F_SendCommand(UBYTE Reg)
-{
-    DEV_Digital_Write(EPD_DC_PIN, 0);
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(Reg);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
+static void EPD_7IN3F_SendCommand(UBYTE Reg) {
+  DEV_Digital_Write(EPD_DC_PIN, 0);
+  DEV_Digital_Write(EPD_CS_PIN, 0);
+  DEV_SPI_WriteByte(Reg);
+  DEV_Digital_Write(EPD_CS_PIN, 1);
 }
 
 /******************************************************************************
@@ -66,232 +64,223 @@ function :	send data
 parameter:
     Data : Write data
 ******************************************************************************/
-static void EPD_7IN3F_SendData(UBYTE Data)
-{
-    DEV_Digital_Write(EPD_DC_PIN, 1);
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(Data);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
+static void EPD_7IN3F_SendData(UBYTE Data) {
+  DEV_Digital_Write(EPD_DC_PIN, 1);
+  DEV_Digital_Write(EPD_CS_PIN, 0);
+  DEV_SPI_WriteByte(Data);
+  DEV_Digital_Write(EPD_CS_PIN, 1);
 }
 
 /******************************************************************************
 function :	Wait until the busy_pin goes LOW
 parameter:
 ******************************************************************************/
-static void EPD_7IN3F_ReadBusyH(void)
-{
-    int cnt = 0;
-    printf("e-Paper busy H\r\n");
-    while(!DEV_Digital_Read(EPD_BUSY_PIN)) {      //LOW: busy, HIGH: idle
-        DEV_Delay_ms(10);
-        cnt++;
-        if(cnt > 12000) {  // 120 seconds (7-color refresh can take 35-60s)
-            printf("e-Paper busy H force release after %d0 ms\r\n", cnt);
-            epd_busy_force_released++;
-            return;
-        }
+static void EPD_7IN3F_ReadBusyH(void) {
+  int cnt = 0;
+  printf("e-Paper busy H\r\n");
+  while (!DEV_Digital_Read(EPD_BUSY_PIN)) {  // LOW: busy, HIGH: idle
+    DEV_Delay_ms(10);
+    cnt++;
+    if (cnt > 12000) {  // 120 seconds (7-color refresh can take 35-60s)
+      printf("e-Paper busy H force release after %d0 ms\r\n", cnt);
+      epd_busy_force_released++;
+      return;
     }
-    printf("e-Paper busy H release after %d0 ms\r\n", cnt);
+  }
+  printf("e-Paper busy H release after %d0 ms\r\n", cnt);
 }
-static void EPD_7IN3F_ReadBusyL(void)
-{
-    printf("e-Paper busy L\r\n");
-    while(DEV_Digital_Read(EPD_BUSY_PIN)) {      //LOW: idle, HIGH: busy
-        DEV_Delay_ms(5);
-    }
-    printf("e-Paper busy L release\r\n");
+static void EPD_7IN3F_ReadBusyL(void) {
+  printf("e-Paper busy L\r\n");
+  while (DEV_Digital_Read(EPD_BUSY_PIN)) {  // LOW: idle, HIGH: busy
+    DEV_Delay_ms(5);
+  }
+  printf("e-Paper busy L release\r\n");
 }
 
 /******************************************************************************
 function :	Turn On Display
 parameter:
 ******************************************************************************/
-static void EPD_7IN3F_TurnOnDisplay(void)
-{
-    EPD_7IN3F_SendCommand(0x04); // POWER_ON
-    EPD_7IN3F_ReadBusyH();
+static void EPD_7IN3F_TurnOnDisplay(void) {
+  EPD_7IN3F_SendCommand(0x04);  // POWER_ON
+  EPD_7IN3F_ReadBusyH();
 
-    EPD_7IN3F_SendCommand(0x12); // DISPLAY_REFRESH
-    EPD_7IN3F_SendData(0x00);
-    EPD_7IN3F_ReadBusyH();
+  EPD_7IN3F_SendCommand(0x12);  // DISPLAY_REFRESH
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_ReadBusyH();
 
-    EPD_7IN3F_SendCommand(0x02); // POWER_OFF
-    EPD_7IN3F_SendData(0X00);
-    EPD_7IN3F_ReadBusyH();
+  EPD_7IN3F_SendCommand(0x02);  // POWER_OFF
+  EPD_7IN3F_SendData(0X00);
+  EPD_7IN3F_ReadBusyH();
 }
 
 /******************************************************************************
 function :	Initialize the e-Paper register
 parameter:
 ******************************************************************************/
-void EPD_7IN3F_Init(void)
-{
-	EPD_7IN3F_Reset();
-	EPD_7IN3F_ReadBusyH();
-	DEV_Delay_ms(30);
+void EPD_7IN3F_Init(void) {
+  EPD_7IN3F_Reset();
+  EPD_7IN3F_ReadBusyH();
+  DEV_Delay_ms(30);
 
-	EPD_7IN3F_SendCommand(0xAA);    // CMDH
-	EPD_7IN3F_SendData(0x49);
-	EPD_7IN3F_SendData(0x55);
-	EPD_7IN3F_SendData(0x20);
-	EPD_7IN3F_SendData(0x08);
-	EPD_7IN3F_SendData(0x09);
-	EPD_7IN3F_SendData(0x18);
+  EPD_7IN3F_SendCommand(0xAA);  // CMDH
+  EPD_7IN3F_SendData(0x49);
+  EPD_7IN3F_SendData(0x55);
+  EPD_7IN3F_SendData(0x20);
+  EPD_7IN3F_SendData(0x08);
+  EPD_7IN3F_SendData(0x09);
+  EPD_7IN3F_SendData(0x18);
 
-	EPD_7IN3F_SendCommand(0x01);
-	EPD_7IN3F_SendData(0x3F);
-	EPD_7IN3F_SendData(0x00);
-	EPD_7IN3F_SendData(0x32);
-	EPD_7IN3F_SendData(0x2A);
-	EPD_7IN3F_SendData(0x0E);
-	EPD_7IN3F_SendData(0x2A);
+  EPD_7IN3F_SendCommand(0x01);
+  EPD_7IN3F_SendData(0x3F);
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x32);
+  EPD_7IN3F_SendData(0x2A);
+  EPD_7IN3F_SendData(0x0E);
+  EPD_7IN3F_SendData(0x2A);
 
-	EPD_7IN3F_SendCommand(0x00);
-	EPD_7IN3F_SendData(0x5F);
-	EPD_7IN3F_SendData(0x69);
+  EPD_7IN3F_SendCommand(0x00);
+  EPD_7IN3F_SendData(0x5F);
+  EPD_7IN3F_SendData(0x69);
 
-	EPD_7IN3F_SendCommand(0x03);
-	EPD_7IN3F_SendData(0x00);
-	EPD_7IN3F_SendData(0x54);
-	EPD_7IN3F_SendData(0x00);
-	EPD_7IN3F_SendData(0x44); 
+  EPD_7IN3F_SendCommand(0x03);
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x54);
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x44);
 
-	EPD_7IN3F_SendCommand(0x05);
-	EPD_7IN3F_SendData(0x40);
-	EPD_7IN3F_SendData(0x1F);
-	EPD_7IN3F_SendData(0x1F);
-	EPD_7IN3F_SendData(0x2C);
+  EPD_7IN3F_SendCommand(0x05);
+  EPD_7IN3F_SendData(0x40);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x2C);
 
-	EPD_7IN3F_SendCommand(0x06);
-	EPD_7IN3F_SendData(0x6F);
-	EPD_7IN3F_SendData(0x1F);
-	EPD_7IN3F_SendData(0x1F);
-	EPD_7IN3F_SendData(0x22);
+  EPD_7IN3F_SendCommand(0x06);
+  EPD_7IN3F_SendData(0x6F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x22);
 
-	EPD_7IN3F_SendCommand(0x08);
-	EPD_7IN3F_SendData(0x6F);
-	EPD_7IN3F_SendData(0x1F);
-	EPD_7IN3F_SendData(0x1F);
-	EPD_7IN3F_SendData(0x22);
+  EPD_7IN3F_SendCommand(0x08);
+  EPD_7IN3F_SendData(0x6F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x22);
 
-	EPD_7IN3F_SendCommand(0x13);    // IPC
-	EPD_7IN3F_SendData(0x00);
-	EPD_7IN3F_SendData(0x04);
+  EPD_7IN3F_SendCommand(0x13);  // IPC
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x04);
 
-	EPD_7IN3F_SendCommand(0x30);
-	EPD_7IN3F_SendData(0x3C);
+  EPD_7IN3F_SendCommand(0x30);
+  EPD_7IN3F_SendData(0x3C);
 
-	EPD_7IN3F_SendCommand(0x41);     // TSE
-	EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendCommand(0x41);  // TSE
+  EPD_7IN3F_SendData(0x00);
 
-	EPD_7IN3F_SendCommand(0x50);
-	EPD_7IN3F_SendData(0x3F);
+  EPD_7IN3F_SendCommand(0x50);
+  EPD_7IN3F_SendData(0x3F);
 
-	EPD_7IN3F_SendCommand(0x60);
-	EPD_7IN3F_SendData(0x02);
-	EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendCommand(0x60);
+  EPD_7IN3F_SendData(0x02);
+  EPD_7IN3F_SendData(0x00);
 
-	EPD_7IN3F_SendCommand(0x61);
-	EPD_7IN3F_SendData(0x03);
-	EPD_7IN3F_SendData(0x20);
-	EPD_7IN3F_SendData(0x01); 
-	EPD_7IN3F_SendData(0xE0);
+  EPD_7IN3F_SendCommand(0x61);
+  EPD_7IN3F_SendData(0x03);
+  EPD_7IN3F_SendData(0x20);
+  EPD_7IN3F_SendData(0x01);
+  EPD_7IN3F_SendData(0xE0);
 
-	EPD_7IN3F_SendCommand(0x82);
-	EPD_7IN3F_SendData(0x1E); 
+  EPD_7IN3F_SendCommand(0x82);
+  EPD_7IN3F_SendData(0x1E);
 
-	EPD_7IN3F_SendCommand(0x84);
-	EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendCommand(0x84);
+  EPD_7IN3F_SendData(0x00);
 
-	EPD_7IN3F_SendCommand(0x86);    // AGID
-	EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendCommand(0x86);  // AGID
+  EPD_7IN3F_SendData(0x00);
 
-	EPD_7IN3F_SendCommand(0xE3);
-	EPD_7IN3F_SendData(0x2F);
+  EPD_7IN3F_SendCommand(0xE3);
+  EPD_7IN3F_SendData(0x2F);
 
-	EPD_7IN3F_SendCommand(0xE0);   // CCSET
-	EPD_7IN3F_SendData(0x00); 
+  EPD_7IN3F_SendCommand(0xE0);  // CCSET
+  EPD_7IN3F_SendData(0x00);
 
-	EPD_7IN3F_SendCommand(0xE6);   // TSSET
-	EPD_7IN3F_SendData(0x00);
-	
+  EPD_7IN3F_SendCommand(0xE6);  // TSSET
+  EPD_7IN3F_SendData(0x00);
 }
 
 /******************************************************************************
 function :	Clear screen
 parameter:
 ******************************************************************************/
-void EPD_7IN3F_Clear(UBYTE color)
-{
-    UWORD Width, Height;
-    Width = (EPD_7IN3F_WIDTH % 2 == 0)? (EPD_7IN3F_WIDTH / 2 ): (EPD_7IN3F_WIDTH / 2 + 1);
-    Height = EPD_7IN3F_HEIGHT;
+void EPD_7IN3F_Clear(UBYTE color) {
+  UWORD Width, Height;
+  Width = (EPD_7IN3F_WIDTH % 2 == 0) ? (EPD_7IN3F_WIDTH / 2)
+                                     : (EPD_7IN3F_WIDTH / 2 + 1);
+  Height = EPD_7IN3F_HEIGHT;
 
-    EPD_7IN3F_SendCommand(0x10);
-    for (UWORD j = 0; j < Height; j++) {
-        for (UWORD i = 0; i < Width; i++) {
-			EPD_7IN3F_SendData((color<<4)|color);
-        }
+  EPD_7IN3F_SendCommand(0x10);
+  for (UWORD j = 0; j < Height; j++) {
+    for (UWORD i = 0; i < Width; i++) {
+      EPD_7IN3F_SendData((color << 4) | color);
     }
+  }
 
-    EPD_7IN3F_TurnOnDisplay();
+  EPD_7IN3F_TurnOnDisplay();
 }
 
 /******************************************************************************
 function :	show 7 kind of color block
 parameter:
 ******************************************************************************/
-void EPD_7IN3F_Show7Block(void)
-{
-    unsigned long i,j,k;
-    unsigned char const Color_seven[8] =
-	{EPD_7IN3F_BLACK,EPD_7IN3F_BLUE,EPD_7IN3F_GREEN,EPD_7IN3F_ORANGE,
-	EPD_7IN3F_RED,EPD_7IN3F_YELLOW,EPD_7IN3F_WHITE,EPD_7IN3F_WHITE};
+void EPD_7IN3F_Show7Block(void) {
+  unsigned long i, j, k;
+  unsigned char const Color_seven[8] = {
+      EPD_7IN3F_BLACK, EPD_7IN3F_BLUE,   EPD_7IN3F_GREEN, EPD_7IN3F_ORANGE,
+      EPD_7IN3F_RED,   EPD_7IN3F_YELLOW, EPD_7IN3F_WHITE, EPD_7IN3F_WHITE};
 
-    EPD_7IN3F_SendCommand(0x10);
-    for(i=0; i<240; i++) {
-        for(k = 0 ; k < 4; k ++) {
-            for(j = 0 ; j < 100; j ++) {
-                EPD_7IN3F_SendData((Color_seven[k]<<4) |Color_seven[k]);
-            }
-        }
+  EPD_7IN3F_SendCommand(0x10);
+  for (i = 0; i < 240; i++) {
+    for (k = 0; k < 4; k++) {
+      for (j = 0; j < 100; j++) {
+        EPD_7IN3F_SendData((Color_seven[k] << 4) | Color_seven[k]);
+      }
     }
-    for(i=0; i<240; i++) {
-        for(k = 4 ; k < 8; k ++) {
-            for(j = 0 ; j < 100; j ++) {
-                EPD_7IN3F_SendData((Color_seven[k]<<4) |Color_seven[k]);
-            }
-        }
+  }
+  for (i = 0; i < 240; i++) {
+    for (k = 4; k < 8; k++) {
+      for (j = 0; j < 100; j++) {
+        EPD_7IN3F_SendData((Color_seven[k] << 4) | Color_seven[k]);
+      }
     }
-    EPD_7IN3F_TurnOnDisplay();
+  }
+  EPD_7IN3F_TurnOnDisplay();
 }
 
 /******************************************************************************
 function :	Sends the image buffer in RAM to e-Paper and displays
 parameter:
 ******************************************************************************/
-void EPD_7IN3F_Display(UBYTE *Image)
-{
-    UWORD Width, Height;
-    Width = (EPD_7IN3F_WIDTH % 2 == 0)? (EPD_7IN3F_WIDTH / 2 ): (EPD_7IN3F_WIDTH / 2 + 1);
-    Height = EPD_7IN3F_HEIGHT;
+void EPD_7IN3F_Display(UBYTE* Image) {
+  UWORD Width, Height;
+  Width = (EPD_7IN3F_WIDTH % 2 == 0) ? (EPD_7IN3F_WIDTH / 2)
+                                     : (EPD_7IN3F_WIDTH / 2 + 1);
+  Height = EPD_7IN3F_HEIGHT;
 
-    EPD_7IN3F_SendCommand(0x10);
-    for (UWORD j = 0; j < Height; j++) {
-        for (UWORD i = 0; i < Width; i++) {
-            EPD_7IN3F_SendData(Image[i + j * Width]);
-        }
+  EPD_7IN3F_SendCommand(0x10);
+  for (UWORD j = 0; j < Height; j++) {
+    for (UWORD i = 0; i < Width; i++) {
+      EPD_7IN3F_SendData(Image[i + j * Width]);
     }
-    EPD_7IN3F_TurnOnDisplay();
+  }
+  EPD_7IN3F_TurnOnDisplay();
 }
 
 /******************************************************************************
 function :	Enter sleep mode
 parameter:
 ******************************************************************************/
-void EPD_7IN3F_Sleep(void)
-{
-    EPD_7IN3F_SendCommand(0x07); // DEEP_SLEEP
-    EPD_7IN3F_SendData(0XA5);
+void EPD_7IN3F_Sleep(void) {
+  EPD_7IN3F_SendCommand(0x07);  // DEEP_SLEEP
+  EPD_7IN3F_SendData(0XA5);
 }
-
