@@ -30,6 +30,10 @@
 ******************************************************************************/
 #include "EPD_7in3f.h"
 
+// Global flag: incremented each time ReadBusyH force-releases due to timeout.
+// Checked from main.c to detect incomplete e-paper operations.
+volatile int epd_busy_force_released = 0;
+
 /******************************************************************************
 function :	Software reset
 parameter:
@@ -78,15 +82,16 @@ static void EPD_7IN3F_ReadBusyH(void)
 {
     int cnt = 0;
     printf("e-Paper busy H\r\n");
-    while(!DEV_Digital_Read(EPD_BUSY_PIN)) {      //LOW: idle, HIGH: busy
+    while(!DEV_Digital_Read(EPD_BUSY_PIN)) {      //LOW: busy, HIGH: idle
         DEV_Delay_ms(10);
         cnt++;
-        if(cnt > 5000) {
-            printf("e-Paper busy H force release\r\n");
+        if(cnt > 12000) {  // 120 seconds (7-color refresh can take 35-60s)
+            printf("e-Paper busy H force release after %d0 ms\r\n", cnt);
+            epd_busy_force_released++;
             return;
         }
     }
-    printf("e-Paper busy H release\r\n");
+    printf("e-Paper busy H release after %d0 ms\r\n", cnt);
 }
 static void EPD_7IN3F_ReadBusyL(void)
 {

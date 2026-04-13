@@ -46,6 +46,9 @@
 #include "lib/GUI/GUI_Paint.h"
 #include "lib/e-Paper/EPD_7in3f.h"
 
+// Defined in EPD_7in3f.c — incremented on ReadBusyH force-release timeout.
+extern volatile int epd_busy_force_released;
+
 // ---------------------------------------------------------------------------
 // End configuration
 // ---------------------------------------------------------------------------
@@ -91,7 +94,7 @@ void uart_log(const char* msg) {
 // awake and listening on Serial1.
 // ---------------------------------------------------------------------------
 #if PICO_UART_LOGGING
-#define PLOG_BUFFER_SIZE 512
+#define PLOG_BUFFER_SIZE 2048
 static char plog_buffer[PLOG_BUFFER_SIZE];
 static size_t plog_buffer_len = 0;
 
@@ -367,7 +370,9 @@ int main(void) {
   static uint8_t image_buffer[IMAGE_SIZE];
   int last_status_ok = 0;  // 1=ok, 0=error
   unsigned long last_display_sum = 0;
-  plog("BOOT");
+  unsigned int cycle_count = 0;
+  int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
+  plog_fmt("BOOT vbus=%d", vbus);
   while (1) {
     // LED status based on last result
     if (last_status_ok) {
@@ -377,6 +382,12 @@ int main(void) {
     }
     // Clear image buffer to avoid leftover pixels from previous transfers
     memset(image_buffer, 0xFF, IMAGE_SIZE);
+
+    // Log cycle diagnostics
+    cycle_count++;
+    vbus = gpio_get(24);
+    plog_fmt("CYCLE %u vbus=%d last_sum=%lu", cycle_count, vbus,
+             last_display_sum);
 
     // Flush any buffered PLOG lines to ESP32 before sending SENDIMG.
     // The ESP32 is awake and listening at this point.
@@ -413,7 +424,8 @@ int main(void) {
       uart_log(summsg);
 
       if (last_display_sum != 0 && full_sum == last_display_sum) {
-        plog_fmt("SKIP chk=%lu last=%lu", full_sum, last_display_sum);
+        plog_fmt("SKIP chk=%lu last=%lu bytes=%u", full_sum,
+                 last_display_sum, (unsigned)last_receive_count);
         uart_log(
             "Image identical to last displayed image — skipping redisplay");
         last_status_ok = 1;
@@ -429,10 +441,16 @@ int main(void) {
         }
         continue;
       }
-      plog_fmt("DISPLAY chk=%lu bytes=%u", full_sum,
-               (unsigned)last_receive_count);
+      plog_fmt("DISPLAY chk=%lu bytes=%u first4=%02X%02X%02X%02X", full_sum,
+               (unsigned)last_receive_count, image_buffer[0], image_buffer[1],
+               image_buffer[2], image_buffer[3]);
       plog("EPD_INIT");
+      epd_busy_force_released = 0;  // reset before EPD operations
+      absolute_time_t epd_t0 = get_absolute_time();
       EPD_7IN3F_Init();
+      int64_t init_us = absolute_time_diff_us(epd_t0, get_absolute_time());
+      plog_fmt("INIT_DONE ms=%lld forced=%d", init_us / 1000,
+               epd_busy_force_released);
       uart_log("EPD_7IN3F_Init() done");
       // Log a simple checksum so we can verify the buffer changes between
       // updates. This helps detect whether the same image is being sent.
@@ -443,9 +461,15 @@ int main(void) {
       snprintf(chkmsg, sizeof(chkmsg), "Image checksum (first 32 bytes): %lu",
                img_sum);
       uart_log(chkmsg);
+      int forced_before_display = epd_busy_force_released;
+      absolute_time_t disp_t0 = get_absolute_time();
       EPD_7IN3F_Display(image_buffer);
+      int64_t disp_us = absolute_time_diff_us(disp_t0, get_absolute_time());
+      int forced_during_display =
+          epd_busy_force_released - forced_before_display;
       uart_log("EPD_7IN3F_Display() done");
-      plog("DISPLAY_DONE");
+      plog_fmt("DISPLAY_DONE ms=%lld forced=%d", disp_us / 1000,
+               forced_during_display);
       // Give the panel time to finish refresh before entering deep-sleep.
       // In some hardware/driver combos an immediate sleep can prevent the
       // visible update on subsequent refreshes.
