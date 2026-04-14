@@ -42,9 +42,11 @@ static void EPD_7IN3F_Reset(void) {
   DEV_Digital_Write(EPD_RST_PIN, 1);
   DEV_Delay_ms(20);
   DEV_Digital_Write(EPD_RST_PIN, 0);
-  DEV_Delay_ms(5);
+  DEV_Delay_ms(50);  // 50ms reset pulse (was 5ms) — panel needs longer to
+                     // wake from deep sleep
   DEV_Digital_Write(EPD_RST_PIN, 1);
-  DEV_Delay_ms(20);
+  DEV_Delay_ms(300); // 300ms post-reset (was 20ms) — give panel time to
+                     // restart oscillator and assert BUSY before we check it
 }
 
 /******************************************************************************
@@ -120,6 +122,11 @@ parameter:
 ******************************************************************************/
 void EPD_7IN3F_Init(void) {
   EPD_7IN3F_Reset();
+  // After deep sleep, the panel needs time to restart its internal oscillator
+  // and assert BUSY LOW. Without this delay, ReadBusyH sees HIGH (idle)
+  // immediately and all subsequent commands are ignored by the still-sleeping
+  // panel — producing a 447ms "refresh" that doesn't physically update.
+  DEV_Delay_ms(100);
   EPD_7IN3F_ReadBusyH();
   DEV_Delay_ms(30);
 
