@@ -45,8 +45,8 @@ static void EPD_7IN3F_Reset(void) {
   DEV_Delay_ms(50);  // 50ms reset pulse (was 5ms) — panel needs longer to
                      // wake from deep sleep
   DEV_Digital_Write(EPD_RST_PIN, 1);
-  DEV_Delay_ms(300); // 300ms post-reset (was 20ms) — give panel time to
-                     // restart oscillator and assert BUSY before we check it
+  DEV_Delay_ms(300);  // 300ms post-reset (was 20ms) — give panel time to
+                      // restart oscillator and assert BUSY before we check it
 }
 
 /******************************************************************************

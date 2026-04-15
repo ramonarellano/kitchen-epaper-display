@@ -470,23 +470,21 @@ int main(void) {
       uart_log("EPD_7IN3F_Display() done");
       plog_fmt("DISPLAY_DONE ms=%lld forced=%d", disp_us / 1000,
                forced_during_display);
-      // Give the panel time to finish refresh before entering deep-sleep.
-      // In some hardware/driver combos an immediate sleep can prevent the
-      // visible update on subsequent refreshes.
-      sleep_ms(5000);
-#if !defined(DISABLE_DISPLAY_SLEEP)
-      EPD_7IN3F_Sleep();
-      uart_log("EPD_7IN3F_Sleep() done");
-      plog("EPD_SLEEP last_sum=0");
-      // After deep-sleep, the panel needs a full re-init/display cycle to
-      // visibly update. Clear last_display_sum so the next image is always
-      // displayed, even if byte-identical.
+      // Do NOT call EPD_7IN3F_Sleep() (deep sleep command 0x07).
+      // The Waveshare driver's deep sleep puts the panel into a state where
+      // the BUSY pin floats HIGH. On the next Init(), ReadBusyH() sees HIGH
+      // and returns instantly, causing all subsequent commands (POWER_ON,
+      // DISPLAY_REFRESH, POWER_OFF) to execute against a sleeping panel.
+      // The result: Display() completes in ~447ms (SPI transfer only) with
+      // no physical refresh.
+      //
+      // TurnOnDisplay() already sends POWER_OFF (0x02) at the end of each
+      // refresh, which puts the panel in low-power standby (~50µA) that
+      // Init() can wake from reliably. For a wall-powered device, skipping
+      // deep sleep is the correct approach.
+      uart_log("Skipping EPD_Sleep (using POWER_OFF standby instead)");
+      plog("NO_DEEP_SLEEP last_sum=0");
       last_display_sum = 0;
-#else
-      uart_log("EPD_7IN3F_Sleep() skipped (DISABLE_DISPLAY_SLEEP defined)");
-      // Remember checksum of last displayed image
-      last_display_sum = full_sum;
-#endif
       uart_log("Image displayed");
       last_status_ok = 1;
       led_status_off();
