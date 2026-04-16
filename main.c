@@ -372,7 +372,7 @@ int main(void) {
   unsigned long last_display_sum = 0;
   unsigned int cycle_count = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d", vbus);
+  plog_fmt("BOOT vbus=%d fw=NO_DEEP_SLEEP_v1", vbus);
   while (1) {
     // LED status based on last result
     if (last_status_ok) {
