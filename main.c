@@ -94,7 +94,7 @@ void uart_log(const char* msg) {
 // awake and listening on Serial1.
 // ---------------------------------------------------------------------------
 #if PICO_UART_LOGGING
-#define PLOG_BUFFER_SIZE 2048
+#define PLOG_BUFFER_SIZE 4096
 static char plog_buffer[PLOG_BUFFER_SIZE];
 static size_t plog_buffer_len = 0;
 
@@ -371,8 +371,9 @@ int main(void) {
   int last_status_ok = 0;  // 1=ok, 0=error
   unsigned long last_display_sum = 0;
   unsigned int cycle_count = 0;
+  unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=NO_DEEP_SLEEP_v1", vbus);
+  plog_fmt("BOOT vbus=%d fw=DIAG_v2", vbus);
   while (1) {
     // LED status based on last result
     if (last_status_ok) {
@@ -385,16 +386,20 @@ int main(void) {
 
     // Log cycle diagnostics
     cycle_count++;
+    total_sendimg_attempts++;
     vbus = gpio_get(24);
-    plog_fmt("CYCLE %u vbus=%d last_sum=%lu", cycle_count, vbus,
-             last_display_sum);
+    plog_fmt("CYCLE %u vbus=%d last_sum=%lu attempts=%u", cycle_count, vbus,
+             last_display_sum, total_sendimg_attempts);
 
     // Flush any buffered PLOG lines to ESP32 before sending SENDIMG.
     // The ESP32 is awake and listening at this point.
     plog_flush();
 
     // Try to request and receive image
+    plog("SENDIMG_START");
     int recv_result = request_and_receive_image(image_buffer, IMAGE_SIZE);
+    plog_fmt("SENDIMG_RESULT rc=%d recv=%u", recv_result,
+             (unsigned)last_receive_count);
     if (recv_result == 0) {
       // Indicate transfer in progress
       led_status_transferring();
@@ -430,7 +435,11 @@ int main(void) {
             "Image identical to last displayed image — skipping redisplay");
         last_status_ok = 1;
         // wait IMAGE_REQUEST_INTERVAL_MINUTES before next request
+        plog_fmt("SKIP_WAIT_START min=%d", IMAGE_REQUEST_INTERVAL_MINUTES);
         for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
+          if (i % 10 == 0 && i != IMAGE_REQUEST_INTERVAL_MINUTES) {
+            plog_fmt("WAIT_TICK min_left=%d", i);
+          }
           char msg[64];
           snprintf(msg, sizeof(msg), "Next update in %d minute%s...", i,
                    (i == 1) ? "" : "s");
@@ -439,6 +448,7 @@ int main(void) {
             sleep_ms(1000);
           }
         }
+        plog("WAIT_DONE");
         continue;
       }
       plog_fmt("DISPLAY chk=%lu bytes=%u first4=%02X%02X%02X%02X", full_sum,
@@ -449,8 +459,8 @@ int main(void) {
       absolute_time_t epd_t0 = get_absolute_time();
       EPD_7IN3F_Init();
       int64_t init_us = absolute_time_diff_us(epd_t0, get_absolute_time());
-      plog_fmt("INIT_DONE ms=%lld forced=%d", init_us / 1000,
-               epd_busy_force_released);
+      plog_fmt("INIT_DONE ms=%lld forced=%d busy_before=%d", init_us / 1000,
+               epd_busy_force_released, epd_busy_pin_at_init);
       uart_log("EPD_7IN3F_Init() done");
       // Log a simple checksum so we can verify the buffer changes between
       // updates. This helps detect whether the same image is being sent.
@@ -470,6 +480,13 @@ int main(void) {
       uart_log("EPD_7IN3F_Display() done");
       plog_fmt("DISPLAY_DONE ms=%lld forced=%d", disp_us / 1000,
                forced_during_display);
+      plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
+               (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
+               (long)epd_phase_power_off_ms);
+      // Flag whether this looks like a real refresh (refresh phase > 5s)
+      int real_refresh = (epd_phase_refresh_ms > 5000) ? 1 : 0;
+      plog_fmt("REFRESH_VERDICT real=%d refresh_ms=%ld", real_refresh,
+               (long)epd_phase_refresh_ms);
       // Do NOT call EPD_7IN3F_Sleep() (deep sleep command 0x07).
       // The Waveshare driver's deep sleep puts the panel into a state where
       // the BUSY pin floats HIGH. On the next Init(), ReadBusyH() sees HIGH
@@ -488,9 +505,14 @@ int main(void) {
       uart_log("Image displayed");
       last_status_ok = 1;
       led_status_off();
-      // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request, logging time
-      // remaining every minute
+      // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request
+      // Log heartbeats every 10 minutes so we can verify the Pico survived
+      // the wait (these buffer into PLOG and flush at next cycle start).
+      plog_fmt("WAIT_START min=%d", IMAGE_REQUEST_INTERVAL_MINUTES);
       for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
+        if (i % 10 == 0 && i != IMAGE_REQUEST_INTERVAL_MINUTES) {
+          plog_fmt("WAIT_TICK min_left=%d", i);
+        }
         char msg[64];
         snprintf(msg, sizeof(msg), "Next update in %d minute%s...", i,
                  (i == 1) ? "" : "s");
@@ -499,16 +521,18 @@ int main(void) {
           sleep_ms(1000);
         }
       }
+      plog("WAIT_DONE");
     } else if (recv_result == -2) {
       // request_and_receive_image already logged the timeout and waited 30s.
       uart_log("Retrying image request after timeout wait");
-      plog("RECV_TIMEOUT retry");
+      plog_fmt("RECV_TIMEOUT retry attempts=%u", total_sendimg_attempts);
       last_status_ok = 0;
       // Continue to start the request sequence again immediately
       continue;
     } else {
       uart_log("Image reception failed, will retry.");
-      plog("RECV_FAIL");
+      plog_fmt("RECV_FAIL rc=%d attempts=%u", recv_result,
+               total_sendimg_attempts);
       last_status_ok = 0;
       // Retry every 5 seconds
       for (int i = 0; i < 5; ++i) {

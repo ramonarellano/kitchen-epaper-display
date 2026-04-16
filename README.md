@@ -27,11 +27,14 @@ This project provides firmware for a Raspberry Pi Pico (RP2040) that receives im
   ## Recent changes (refactor & debugging)
 
   - **Fixed: display only refreshing once after power-on.** `EPD_7IN3F_Sleep()` put the panel into deep sleep where the BUSY pin floats HIGH. On subsequent `Init()` calls, `ReadBusyH()` returned instantly, causing `Display()` to complete in ~447ms (SPI transfer only) with no physical refresh. The fix removes the deep-sleep call entirely; `TurnOnDisplay()` already sends POWER_OFF (0x02) which keeps the panel in low-power standby (~50µA) that `Init()` can wake from reliably.
-  - Added firmware version tag (`fw=NO_DEEP_SLEEP_v1`) to the BOOT log line for deployment verification.
+  - Added firmware version tag (`fw=DIAG_v2`) to the BOOT log line for deployment verification.
   - Centralized configuration at the top of `main.c` (all timeouts and buffer sizes in one place).
   - Robust ACK detection and ACK timeout increased to 10s; SOF and data-timeout handling improved.
   - Removed fallback-image display (simplified flow) and made timeouts wait-and-retry in a consistent way.
   - Added a small host-test (`tests/test_ack.c`) that validates ACK substring detection.
+  - Added EPD phase-level timing (`EPD_PHASES pwr_on=X refresh=Y pwr_off=Z`) and `REFRESH_VERDICT real=0/1` to diagnose whether a display refresh actually occurred.
+  - BUSY pin state is now sampled before `Init()` and logged as `busy_before=X` to detect floating-HIGH conditions.
+  - PLOG heartbeats (`WAIT_TICK`) logged every 10 minutes during the 60-minute idle wait to confirm the Pico survived.
 
   ## Main Features
 
@@ -57,7 +60,7 @@ This project provides firmware for a Raspberry Pi Pico (RP2040) that receives im
 
   - Controlled by the `PICO_UART_LOGGING` flag at the top of `main.c` (set to `0` to disable).
   - Messages are buffered during Pico processing and flushed to the ESP32 right before each `SENDIMG`, when the ESP32 is awake and listening.
-  - Events logged: `BOOT vbus=X fw=NO_DEEP_SLEEP_v1`, `EPD_INIT`, `DISPLAY chk=X bytes=Y`, `DISPLAY_DONE`, `NO_DEEP_SLEEP last_sum=0`, `SKIP chk=X last=Y`, `RECV_TIMEOUT retry`, `RECV_FAIL`.
+  - Events logged: `BOOT vbus=X fw=DIAG_v2`, `SENDIMG_START`, `SENDIMG_RESULT rc=X recv=Y`, `EPD_INIT`, `INIT_DONE ms=X forced=Y busy_before=Z`, `DISPLAY chk=X bytes=Y`, `DISPLAY_DONE ms=X forced=Y`, `EPD_PHASES pwr_on=X refresh=Y pwr_off=Z`, `REFRESH_VERDICT real=0/1 refresh_ms=X`, `NO_DEEP_SLEEP last_sum=0`, `WAIT_START`, `WAIT_TICK min_left=X`, `WAIT_DONE`, `SKIP chk=X last=Y`, `RECV_TIMEOUT retry attempts=N`, `RECV_FAIL rc=X attempts=N`.
   - Retrieve logs from the ESP32 using `python3 fetch_and_clear_logs.py` in the ESP32 repo.
 
   ## Running the unit tests (host)

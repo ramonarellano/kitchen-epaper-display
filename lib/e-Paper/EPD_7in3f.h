@@ -34,25 +34,32 @@
 #include "DEV_Config.h"
 
 // Display resolution
-#define EPD_7IN3F_WIDTH       800
-#define EPD_7IN3F_HEIGHT      480
+#define EPD_7IN3F_WIDTH 800
+#define EPD_7IN3F_HEIGHT 480
 
 /**********************************
 Color Index
 **********************************/
-#define EPD_7IN3F_BLACK   0x0	/// 000
-#define EPD_7IN3F_WHITE   0x1	///	001
-#define EPD_7IN3F_GREEN   0x2	///	010
-#define EPD_7IN3F_BLUE    0x3	///	011
-#define EPD_7IN3F_RED     0x4	///	100
-#define EPD_7IN3F_YELLOW  0x5	///	101
-#define EPD_7IN3F_ORANGE  0x6	///	110
-#define EPD_7IN3F_CLEAN   0x7	///	111   unavailable  Afterimage
+#define EPD_7IN3F_BLACK 0x0   /// 000
+#define EPD_7IN3F_WHITE 0x1   ///	001
+#define EPD_7IN3F_GREEN 0x2   ///	010
+#define EPD_7IN3F_BLUE 0x3    ///	011
+#define EPD_7IN3F_RED 0x4     ///	100
+#define EPD_7IN3F_YELLOW 0x5  ///	101
+#define EPD_7IN3F_ORANGE 0x6  ///	110
+#define EPD_7IN3F_CLEAN 0x7   ///	111   unavailable  Afterimage
 
 void EPD_7IN3F_Init(void);
 void EPD_7IN3F_Clear(UBYTE color);
 void EPD_7IN3F_Show7Block(void);
-void EPD_7IN3F_Display(UBYTE *Image);
+void EPD_7IN3F_Display(UBYTE* Image);
 void EPD_7IN3F_Sleep(void);
+
+// Phase timing (ms) from last TurnOnDisplay; -1 if not yet run.
+extern volatile int32_t epd_phase_power_on_ms;
+extern volatile int32_t epd_phase_refresh_ms;
+extern volatile int32_t epd_phase_power_off_ms;
+// BUSY pin state sampled at start of Init (before Reset).
+extern volatile int epd_busy_pin_at_init;
 
 #endif

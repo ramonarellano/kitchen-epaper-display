@@ -29,6 +29,14 @@
 #
 ******************************************************************************/
 #include "EPD_7in3f.h"
+#include "pico/time.h"
+
+// Phase timing exported so main.c can log them via PLOG.
+// Set by TurnOnDisplay after each refresh cycle.
+volatile int32_t epd_phase_power_on_ms = -1;
+volatile int32_t epd_phase_refresh_ms = -1;
+volatile int32_t epd_phase_power_off_ms = -1;
+volatile int epd_busy_pin_at_init = -1;
 
 // Global flag: incremented each time ReadBusyH force-releases due to timeout.
 // Checked from main.c to detect incomplete e-paper operations.
@@ -104,16 +112,27 @@ function :	Turn On Display
 parameter:
 ******************************************************************************/
 static void EPD_7IN3F_TurnOnDisplay(void) {
+  absolute_time_t t0;
+
+  t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
   EPD_7IN3F_ReadBusyH();
+  epd_phase_power_on_ms =
+      (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
 
+  t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x12);  // DISPLAY_REFRESH
   EPD_7IN3F_SendData(0x00);
   EPD_7IN3F_ReadBusyH();
+  epd_phase_refresh_ms =
+      (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
 
+  t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x02);  // POWER_OFF
   EPD_7IN3F_SendData(0X00);
   EPD_7IN3F_ReadBusyH();
+  epd_phase_power_off_ms =
+      (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
 }
 
 /******************************************************************************
@@ -121,6 +140,7 @@ function :	Initialize the e-Paper register
 parameter:
 ******************************************************************************/
 void EPD_7IN3F_Init(void) {
+  epd_busy_pin_at_init = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_Reset();
   // After deep sleep, the panel needs time to restart its internal oscillator
   // and assert BUSY LOW. Without this delay, ReadBusyH sees HIGH (idle)
