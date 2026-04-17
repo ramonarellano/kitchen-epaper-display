@@ -373,7 +373,18 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=DIAG_v2", vbus);
+  plog_fmt("BOOT vbus=%d fw=INIT_ONCE_v1", vbus);
+
+  // Initialize e-paper ONCE at boot. The Waveshare demo pattern is:
+  //   Init() → Display() → Display() → ... → Sleep()
+  // Register config survives POWER_OFF (0x02) which only shuts down the
+  // internal HV boost. Re-calling Init()+Reset() after POWER_OFF corrupts
+  // the BUSY pin state, causing all subsequent ReadBusyH() to return
+  // instantly (0ms phases, 447ms bogus refresh). See Bug #15.
+  plog("EPD_INIT_BOOT");
+  EPD_7IN3F_Init();
+  plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d", epd_busy_pin_at_init);
+
   while (1) {
     // LED status based on last result
     if (last_status_ok) {
@@ -454,14 +465,9 @@ int main(void) {
       plog_fmt("DISPLAY chk=%lu bytes=%u first4=%02X%02X%02X%02X", full_sum,
                (unsigned)last_receive_count, image_buffer[0], image_buffer[1],
                image_buffer[2], image_buffer[3]);
-      plog("EPD_INIT");
+      // No EPD_7IN3F_Init() here — called once at boot. Register config
+      // survives POWER_OFF; re-Init corrupts BUSY pin. See Bug #15.
       epd_busy_force_released = 0;  // reset before EPD operations
-      absolute_time_t epd_t0 = get_absolute_time();
-      EPD_7IN3F_Init();
-      int64_t init_us = absolute_time_diff_us(epd_t0, get_absolute_time());
-      plog_fmt("INIT_DONE ms=%lld forced=%d busy_before=%d", init_us / 1000,
-               epd_busy_force_released, epd_busy_pin_at_init);
-      uart_log("EPD_7IN3F_Init() done");
       // Log a simple checksum so we can verify the buffer changes between
       // updates. This helps detect whether the same image is being sent.
       unsigned long img_sum = 0;
@@ -488,19 +494,20 @@ int main(void) {
       plog_fmt("REFRESH_VERDICT real=%d refresh_ms=%ld", real_refresh,
                (long)epd_phase_refresh_ms);
       // Do NOT call EPD_7IN3F_Sleep() (deep sleep command 0x07).
-      // The Waveshare driver's deep sleep puts the panel into a state where
-      // the BUSY pin floats HIGH. On the next Init(), ReadBusyH() sees HIGH
-      // and returns instantly, causing all subsequent commands (POWER_ON,
-      // DISPLAY_REFRESH, POWER_OFF) to execute against a sleeping panel.
-      // The result: Display() completes in ~447ms (SPI transfer only) with
-      // no physical refresh.
+      // Deep sleep makes the BUSY pin float HIGH permanently.
       //
-      // TurnOnDisplay() already sends POWER_OFF (0x02) at the end of each
-      // refresh, which puts the panel in low-power standby (~50µA) that
-      // Init() can wake from reliably. For a wall-powered device, skipping
-      // deep sleep is the correct approach.
-      uart_log("Skipping EPD_Sleep (using POWER_OFF standby instead)");
-      plog("NO_DEEP_SLEEP last_sum=0");
+      // Do NOT call EPD_7IN3F_Init() between cycles either (Bug #15).
+      // After POWER_OFF (0x02, sent by TurnOnDisplay), re-calling Init()
+      // with hardware Reset corrupts the BUSY pin state — ReadBusyH()
+      // returns instantly and all commands (POWER_ON, REFRESH, POWER_OFF)
+      // complete in 0ms, producing a 447ms bogus refresh.
+      //
+      // The correct pattern (matching Waveshare demos) is:
+      //   Init() once → Display() → Display() → ... (no re-Init)
+      // POWER_OFF shuts down the HV boost (~50µA standby) but preserves
+      // register config. TurnOnDisplay re-powers on each cycle.
+      uart_log("POWER_OFF standby (no Sleep, no re-Init)");
+      plog("STANDBY last_sum=0");
       last_display_sum = 0;
       uart_log("Image displayed");
       last_status_ok = 1;
