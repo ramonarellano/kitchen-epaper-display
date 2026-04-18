@@ -373,7 +373,7 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=INIT_ONCE_v1", vbus);
+  plog_fmt("BOOT vbus=%d fw=SOFT_REINIT_v1", vbus);
 
   // Initialize e-paper ONCE at boot. The Waveshare demo pattern is:
   //   Init() → Display() → Display() → ... → Sleep()
@@ -465,8 +465,13 @@ int main(void) {
       plog_fmt("DISPLAY chk=%lu bytes=%u first4=%02X%02X%02X%02X", full_sum,
                (unsigned)last_receive_count, image_buffer[0], image_buffer[1],
                image_buffer[2], image_buffer[3]);
-      // No EPD_7IN3F_Init() here — called once at boot. Register config
-      // survives POWER_OFF; re-Init corrupts BUSY pin. See Bug #15.
+      // Re-send all register config before each display cycle.
+      // After 60 min in POWER_OFF (<0.01µA), the panel controller's SRAM
+      // loses register state.  ReloadConfig() re-sends the same register
+      // sequence as Init() but WITHOUT hardware reset, so the BUSY pin
+      // is not disturbed.  This matches the GxEPD2 _InitDisplay() pattern.
+      plog("RELOAD_CONFIG");
+      EPD_7IN3F_ReloadConfig();
       epd_busy_force_released = 0;  // reset before EPD operations
       // Log a simple checksum so we can verify the buffer changes between
       // updates. This helps detect whether the same image is being sent.

@@ -50,6 +50,7 @@ Color Index
 #define EPD_7IN3F_CLEAN 0x7   ///	111   unavailable  Afterimage
 
 void EPD_7IN3F_Init(void);
+void EPD_7IN3F_ReloadConfig(void);
 void EPD_7IN3F_Clear(UBYTE color);
 void EPD_7IN3F_Show7Block(void);
 void EPD_7IN3F_Display(UBYTE* Image);

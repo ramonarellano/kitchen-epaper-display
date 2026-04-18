@@ -237,6 +237,102 @@ void EPD_7IN3F_Init(void) {
 }
 
 /******************************************************************************
+function :	Reload all register config WITHOUT hardware reset.
+			Use before each display cycle when the panel has been in
+			POWER_OFF standby for a long time (>minutes).  At <0.01µA
+			standby the controller SRAM loses register state.
+			This is the same register sequence as Init() minus
+			Reset() + ReadBusyH(), so the BUSY pin is not disturbed.
+parameter:
+******************************************************************************/
+void EPD_7IN3F_ReloadConfig(void) {
+  EPD_7IN3F_SendCommand(0xAA);  // CMDH
+  EPD_7IN3F_SendData(0x49);
+  EPD_7IN3F_SendData(0x55);
+  EPD_7IN3F_SendData(0x20);
+  EPD_7IN3F_SendData(0x08);
+  EPD_7IN3F_SendData(0x09);
+  EPD_7IN3F_SendData(0x18);
+
+  EPD_7IN3F_SendCommand(0x01);
+  EPD_7IN3F_SendData(0x3F);
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x32);
+  EPD_7IN3F_SendData(0x2A);
+  EPD_7IN3F_SendData(0x0E);
+  EPD_7IN3F_SendData(0x2A);
+
+  EPD_7IN3F_SendCommand(0x00);
+  EPD_7IN3F_SendData(0x5F);
+  EPD_7IN3F_SendData(0x69);
+
+  EPD_7IN3F_SendCommand(0x03);
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x54);
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x44);
+
+  EPD_7IN3F_SendCommand(0x05);
+  EPD_7IN3F_SendData(0x40);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x2C);
+
+  EPD_7IN3F_SendCommand(0x06);
+  EPD_7IN3F_SendData(0x6F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x22);
+
+  EPD_7IN3F_SendCommand(0x08);
+  EPD_7IN3F_SendData(0x6F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x1F);
+  EPD_7IN3F_SendData(0x22);
+
+  EPD_7IN3F_SendCommand(0x13);  // IPC
+  EPD_7IN3F_SendData(0x00);
+  EPD_7IN3F_SendData(0x04);
+
+  EPD_7IN3F_SendCommand(0x30);
+  EPD_7IN3F_SendData(0x3C);
+
+  EPD_7IN3F_SendCommand(0x41);  // TSE
+  EPD_7IN3F_SendData(0x00);
+
+  EPD_7IN3F_SendCommand(0x50);
+  EPD_7IN3F_SendData(0x3F);
+
+  EPD_7IN3F_SendCommand(0x60);
+  EPD_7IN3F_SendData(0x02);
+  EPD_7IN3F_SendData(0x00);
+
+  EPD_7IN3F_SendCommand(0x61);
+  EPD_7IN3F_SendData(0x03);
+  EPD_7IN3F_SendData(0x20);
+  EPD_7IN3F_SendData(0x01);
+  EPD_7IN3F_SendData(0xE0);
+
+  EPD_7IN3F_SendCommand(0x82);
+  EPD_7IN3F_SendData(0x1E);
+
+  EPD_7IN3F_SendCommand(0x84);
+  EPD_7IN3F_SendData(0x00);
+
+  EPD_7IN3F_SendCommand(0x86);  // AGID
+  EPD_7IN3F_SendData(0x00);
+
+  EPD_7IN3F_SendCommand(0xE3);
+  EPD_7IN3F_SendData(0x2F);
+
+  EPD_7IN3F_SendCommand(0xE0);  // CCSET
+  EPD_7IN3F_SendData(0x00);
+
+  EPD_7IN3F_SendCommand(0xE6);  // TSSET
+  EPD_7IN3F_SendData(0x00);
+}
+
+/******************************************************************************
 function :	Clear screen
 parameter:
 ******************************************************************************/
