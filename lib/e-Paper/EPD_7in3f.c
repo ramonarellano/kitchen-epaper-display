@@ -82,22 +82,31 @@ static void EPD_7IN3F_SendData(UBYTE Data) {
 }
 
 /******************************************************************************
-function :	Wait until the busy_pin goes LOW
+function :	Wait until the busy_pin goes LOW (with configurable timeout)
 parameter:
+  timeout_ms : maximum wait in milliseconds
+returns   : 0 on success, -1 on timeout
 ******************************************************************************/
-static void EPD_7IN3F_ReadBusyH(void) {
+static int EPD_7IN3F_ReadBusyH_timeout(int timeout_ms) {
   int cnt = 0;
-  printf("e-Paper busy H\r\n");
+  int limit = timeout_ms / 10;
+  printf("e-Paper busy H (timeout %dms)\r\n", timeout_ms);
   while (!DEV_Digital_Read(EPD_BUSY_PIN)) {  // LOW: busy, HIGH: idle
     DEV_Delay_ms(10);
     cnt++;
-    if (cnt > 12000) {  // 120 seconds (7-color refresh can take 35-60s)
-      printf("e-Paper busy H force release after %d0 ms\r\n", cnt);
+    if (cnt > limit) {
+      printf("e-Paper busy H TIMEOUT after %d0 ms\r\n", cnt);
       epd_busy_force_released++;
-      return;
+      return -1;
     }
   }
   printf("e-Paper busy H release after %d0 ms\r\n", cnt);
+  return 0;
+}
+
+// Default 120s timeout wrapper (used by Init, Clear, etc.)
+static void EPD_7IN3F_ReadBusyH(void) {
+  EPD_7IN3F_ReadBusyH_timeout(120000);
 }
 static void EPD_7IN3F_ReadBusyL(void) {
   printf("e-Paper busy L\r\n");
@@ -108,38 +117,66 @@ static void EPD_7IN3F_ReadBusyL(void) {
 }
 
 /******************************************************************************
-function :	Turn On Display
+function :	Turn On Display (abort-safe: stops sending commands on timeout)
 parameter:
+returns   : 0 on success, -1 POWER_ON timeout, -2 REFRESH timeout,
+            -3 POWER_OFF timeout
 ******************************************************************************/
-static void EPD_7IN3F_TurnOnDisplay(void) {
+static int EPD_7IN3F_TurnOnDisplay(void) {
   absolute_time_t t0;
 
+  // POWER_ON — should complete in <1s.  10s timeout.
   t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
-  EPD_7IN3F_ReadBusyH();
+  int rc = EPD_7IN3F_ReadBusyH_timeout(10000);
   epd_phase_power_on_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
+  if (rc != 0) {
+    // Panel didn't power on — do NOT send REFRESH or POWER_OFF.
+    // Sending commands to a stuck panel corrupts its state machine.
+    epd_phase_refresh_ms = -1;
+    epd_phase_power_off_ms = -1;
+    return -1;
+  }
 
+  // DISPLAY_REFRESH — takes ~31s for 7-color.  60s timeout.
   t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x12);  // DISPLAY_REFRESH
   EPD_7IN3F_SendData(0x00);
-  EPD_7IN3F_ReadBusyH();
+  rc = EPD_7IN3F_ReadBusyH_timeout(60000);
   epd_phase_refresh_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
+  if (rc != 0) {
+    // Refresh timed out — still send POWER_OFF to protect panel from HV damage
+    t0 = get_absolute_time();
+    EPD_7IN3F_SendCommand(0x02);  // POWER_OFF
+    EPD_7IN3F_SendData(0x00);
+    EPD_7IN3F_ReadBusyH_timeout(10000);  // best effort
+    epd_phase_power_off_ms =
+        (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
+    return -2;
+  }
 
+  // POWER_OFF — should complete in ~150ms.  10s timeout.
   t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x02);  // POWER_OFF
   EPD_7IN3F_SendData(0X00);
-  EPD_7IN3F_ReadBusyH();
+  rc = EPD_7IN3F_ReadBusyH_timeout(10000);
   epd_phase_power_off_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
+  if (rc != 0) {
+    return -3;  // POWER_OFF timeout — panel stays powered
+  }
+
+  return 0;
 }
 
 /******************************************************************************
 function :	Initialize the e-Paper register
 parameter:
+returns   : 0 on success, -1 if panel didn't respond after reset
 ******************************************************************************/
-void EPD_7IN3F_Init(void) {
+int EPD_7IN3F_Init(void) {
   epd_busy_pin_at_init = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_Reset();
   // After deep sleep, the panel needs time to restart its internal oscillator
@@ -147,7 +184,9 @@ void EPD_7IN3F_Init(void) {
   // immediately and all subsequent commands are ignored by the still-sleeping
   // panel — producing a 447ms "refresh" that doesn't physically update.
   DEV_Delay_ms(100);
-  EPD_7IN3F_ReadBusyH();
+  if (EPD_7IN3F_ReadBusyH_timeout(30000) != 0) {
+    return -1;  // panel didn't come up after reset
+  }
   DEV_Delay_ms(30);
 
   EPD_7IN3F_SendCommand(0xAA);  // CMDH
@@ -234,6 +273,7 @@ void EPD_7IN3F_Init(void) {
 
   EPD_7IN3F_SendCommand(0xE6);  // TSSET
   EPD_7IN3F_SendData(0x00);
+  return 0;
 }
 
 /******************************************************************************
@@ -333,14 +373,13 @@ void EPD_7IN3F_ReloadConfig(void) {
 
 /******************************************************************************
 function :	Power on the HV boost (0x04) and wait for BUSY.
-			Call after Init() and before Display() when the panel has been
-			in POWER_OFF for a long time.  GxEPD2 does this in _InitDisplay();
-			it ensures the controller is fully awake before data writes.
-parameter:
+                        Call after Init() and before Display() when the panel
+has been in POWER_OFF for a long time.  GxEPD2 does this in _InitDisplay(); it
+ensures the controller is fully awake before data writes. parameter:
 ******************************************************************************/
-void EPD_7IN3F_PowerOn(void) {
+int EPD_7IN3F_PowerOn(void) {
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
-  EPD_7IN3F_ReadBusyH();
+  return EPD_7IN3F_ReadBusyH_timeout(10000);
 }
 
 /******************************************************************************
@@ -395,7 +434,7 @@ void EPD_7IN3F_Show7Block(void) {
 function :	Sends the image buffer in RAM to e-Paper and displays
 parameter:
 ******************************************************************************/
-void EPD_7IN3F_Display(UBYTE* Image) {
+int EPD_7IN3F_Display(UBYTE* Image) {
   UWORD Width, Height;
   Width = (EPD_7IN3F_WIDTH % 2 == 0) ? (EPD_7IN3F_WIDTH / 2)
                                      : (EPD_7IN3F_WIDTH / 2 + 1);
@@ -407,7 +446,7 @@ void EPD_7IN3F_Display(UBYTE* Image) {
       EPD_7IN3F_SendData(Image[i + j * Width]);
     }
   }
-  EPD_7IN3F_TurnOnDisplay();
+  return EPD_7IN3F_TurnOnDisplay();
 }
 
 /******************************************************************************

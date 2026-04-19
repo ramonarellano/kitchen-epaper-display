@@ -49,12 +49,12 @@ Color Index
 #define EPD_7IN3F_ORANGE 0x6  ///	110
 #define EPD_7IN3F_CLEAN 0x7   ///	111   unavailable  Afterimage
 
-void EPD_7IN3F_Init(void);
+int EPD_7IN3F_Init(void);
 void EPD_7IN3F_ReloadConfig(void);
-void EPD_7IN3F_PowerOn(void);
+int EPD_7IN3F_PowerOn(void);
 void EPD_7IN3F_Clear(UBYTE color);
 void EPD_7IN3F_Show7Block(void);
-void EPD_7IN3F_Display(UBYTE* Image);
+int EPD_7IN3F_Display(UBYTE* Image);
 void EPD_7IN3F_Sleep(void);
 
 // Phase timing (ms) from last TurnOnDisplay; -1 if not yet run.

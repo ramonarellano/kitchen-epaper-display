@@ -373,17 +373,13 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v1", vbus);
+  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v2", vbus);
 
-  // Initialize e-paper ONCE at boot. The Waveshare demo pattern is:
-  //   Init() → Display() → Display() → ... → Sleep()
-  // Register config survives POWER_OFF (0x02) which only shuts down the
-  // internal HV boost. Re-calling Init()+Reset() after POWER_OFF corrupts
-  // the BUSY pin state, causing all subsequent ReadBusyH() to return
-  // instantly (0ms phases, 447ms bogus refresh). See Bug #15.
+  // Initialize e-paper ONCE at boot.
   plog("EPD_INIT_BOOT");
-  EPD_7IN3F_Init();
-  plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d", epd_busy_pin_at_init);
+  int boot_rc = EPD_7IN3F_Init();
+  plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d rc=%d", epd_busy_pin_at_init,
+           boot_rc);
 
   while (1) {
     // LED status based on last result
@@ -465,63 +461,75 @@ int main(void) {
       plog_fmt("DISPLAY chk=%lu bytes=%u first4=%02X%02X%02X%02X", full_sum,
                (unsigned)last_receive_count, image_buffer[0], image_buffer[1],
                image_buffer[2], image_buffer[3]);
-      // Full hardware re-init before each display cycle.
-      // After 60 min in POWER_OFF, the panel controller is unresponsive
-      // to SPI commands (soft re-init failed).  Hardware reset is needed
-      // to wake it.  Current Reset() uses generous timing: 50ms pulse,
-      // 300ms post-reset (vs original 5ms/20ms that failed).
-      // After Init(), send POWER_ON (0x04) before data writes — this
-      // matches the GxEPD2 _InitDisplay() pattern where the controller
-      // is powered on before image data is written to its SRAM.
-      plog("FULL_REINIT");
-      EPD_7IN3F_Init();
-      plog_fmt("REINIT_DONE busy_before=%d", epd_busy_pin_at_init);
-      plog("POWER_ON_PRE");
-      EPD_7IN3F_PowerOn();
-      epd_busy_force_released = 0;  // reset before EPD operations
-      // Log a simple checksum so we can verify the buffer changes between
-      // updates. This helps detect whether the same image is being sent.
-      unsigned long img_sum = 0;
-      for (size_t _i = 0; _i < 32 && _i < IMAGE_SIZE; ++_i)
-        img_sum += image_buffer[_i];
-      char chkmsg[64];
-      snprintf(chkmsg, sizeof(chkmsg), "Image checksum (first 32 bytes): %lu",
-               img_sum);
-      uart_log(chkmsg);
-      int forced_before_display = epd_busy_force_released;
-      absolute_time_t disp_t0 = get_absolute_time();
-      EPD_7IN3F_Display(image_buffer);
-      int64_t disp_us = absolute_time_diff_us(disp_t0, get_absolute_time());
-      int forced_during_display =
-          epd_busy_force_released - forced_before_display;
-      uart_log("EPD_7IN3F_Display() done");
-      plog_fmt("DISPLAY_DONE ms=%lld forced=%d", disp_us / 1000,
-               forced_during_display);
-      plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
-               (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
-               (long)epd_phase_power_off_ms);
-      // Flag whether this looks like a real refresh (refresh phase > 5s)
-      int real_refresh = (epd_phase_refresh_ms > 5000) ? 1 : 0;
-      plog_fmt("REFRESH_VERDICT real=%d refresh_ms=%ld", real_refresh,
-               (long)epd_phase_refresh_ms);
-      // Do NOT call EPD_7IN3F_Sleep() (deep sleep command 0x07).
-      // Deep sleep makes the BUSY pin float HIGH permanently.
-      //
-      // Do NOT call EPD_7IN3F_Init() between cycles either (Bug #15).
-      // After POWER_OFF (0x02, sent by TurnOnDisplay), re-calling Init()
-      // with hardware Reset corrupts the BUSY pin state — ReadBusyH()
-      // returns instantly and all commands (POWER_ON, REFRESH, POWER_OFF)
-      // complete in 0ms, producing a 447ms bogus refresh.
-      //
-      // The correct pattern (matching Waveshare demos) is:
-      //   Init() once → Display() → Display() → ... (no re-Init)
-      // POWER_OFF shuts down the HV boost (~50µA standby) but preserves
-      // register config. TurnOnDisplay re-powers on each cycle.
-      uart_log("POWER_OFF standby (no Sleep, no re-Init)");
+      // Full hardware re-init + PowerOn before each display cycle.
+      // Retry up to 3 times if Init or PowerOn times out.
+      // Previous version (v1) forced through stuck BUSY, which corrupted
+      // the panel's state machine.  v2 aborts on timeout and retries
+      // with a fresh hardware reset.
+#define MAX_REINIT_RETRIES 3
+      int reinit_ok = 0;
+      for (int attempt = 1; attempt <= MAX_REINIT_RETRIES; attempt++) {
+        if (attempt > 1) {
+          plog_fmt("REINIT_RETRY attempt=%d", attempt);
+          DEV_Delay_ms(1000);  // extra settle time between retries
+        }
+        plog("FULL_REINIT");
+        int init_rc = EPD_7IN3F_Init();
+        plog_fmt("REINIT_DONE busy_before=%d rc=%d attempt=%d",
+                 epd_busy_pin_at_init, init_rc, attempt);
+        if (init_rc != 0) {
+          plog_fmt("INIT_TIMEOUT attempt=%d", attempt);
+          continue;
+        }
+        int pon_rc = EPD_7IN3F_PowerOn();
+        plog_fmt("POWER_ON_PRE rc=%d attempt=%d", pon_rc, attempt);
+        if (pon_rc != 0) {
+          plog_fmt("POWER_ON_TIMEOUT attempt=%d", attempt);
+          continue;
+        }
+        reinit_ok = 1;
+        break;
+      }
+      if (!reinit_ok) {
+        plog("REINIT_FAILED — skipping display this cycle");
+        uart_log("Init+PowerOn failed after retries — skipping display");
+        last_status_ok = 0;
+      } else {
+        epd_busy_force_released = 0;  // reset before Display
+        // Log a simple checksum so we can verify the buffer changes between
+        // updates. This helps detect whether the same image is being sent.
+        unsigned long img_sum = 0;
+        for (size_t _i = 0; _i < 32 && _i < IMAGE_SIZE; ++_i)
+          img_sum += image_buffer[_i];
+        char chkmsg[64];
+        snprintf(chkmsg, sizeof(chkmsg),
+                 "Image checksum (first 32 bytes): %lu", img_sum);
+        uart_log(chkmsg);
+        int forced_before_display = epd_busy_force_released;
+        absolute_time_t disp_t0 = get_absolute_time();
+        int disp_rc = EPD_7IN3F_Display(image_buffer);
+        int64_t disp_us = absolute_time_diff_us(disp_t0, get_absolute_time());
+        int forced_during_display =
+            epd_busy_force_released - forced_before_display;
+        uart_log("EPD_7IN3F_Display() done");
+        plog_fmt("DISPLAY_DONE ms=%lld forced=%d rc=%d", disp_us / 1000,
+                 forced_during_display, disp_rc);
+        plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
+                 (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
+                 (long)epd_phase_power_off_ms);
+        // Real refresh: phase > 5s AND no timeout (rc==0 and no forced)
+        int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
+                            forced_during_display == 0)
+                               ? 1
+                               : 0;
+        plog_fmt("REFRESH_VERDICT real=%d refresh_ms=%ld disp_rc=%d",
+                 real_refresh, (long)epd_phase_refresh_ms, disp_rc);
+        uart_log("Image displayed");
+        last_status_ok = 1;
+      }
+      // Standby + wait (always, whether display succeeded or was skipped)
       plog("STANDBY last_sum=0");
       last_display_sum = 0;
-      uart_log("Image displayed");
-      last_status_ok = 1;
       led_status_off();
       // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request
       // Log heartbeats every 10 minutes so we can verify the Pico survived
