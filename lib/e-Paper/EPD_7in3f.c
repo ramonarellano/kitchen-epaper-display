@@ -152,33 +152,24 @@ static void EPD_7IN3F_ReadBusyL(void) {
 
 /******************************************************************************
 function :	Turn On Display (abort-safe: stops sending commands on timeout)
+            Assumes PowerOn() was already called by the caller.
+            Only does REFRESH + POWER_OFF.
 parameter:
-returns   : 0 on success, -1 POWER_ON timeout, -2 REFRESH timeout,
-            -3 POWER_OFF timeout
+returns   : 0 on success, -2 REFRESH timeout, -3 POWER_OFF timeout
 ******************************************************************************/
 static int EPD_7IN3F_TurnOnDisplay(void) {
   absolute_time_t t0;
 
-  // POWER_ON — should complete in <1s.
-  // Use WaitBusyTransition: if BUSY never goes LOW, the panel isn't responding.
-  t0 = get_absolute_time();
-  EPD_7IN3F_SendCommand(0x04);  // POWER_ON
-  int rc = EPD_7IN3F_WaitBusyTransition(2000, 10000);
-  epd_phase_power_on_ms =
-      (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
-  if (rc != 0) {
-    // Panel didn't power on — do NOT send REFRESH or POWER_OFF.
-    // Sending commands to a stuck panel corrupts its state machine.
-    epd_phase_refresh_ms = -1;
-    epd_phase_power_off_ms = -1;
-    return -1;
-  }
+  // PowerOn (0x04) is NOT sent here — the caller must call PowerOn()
+  // before Display().  Sending 0x04 again when already powered on is a
+  // no-op where BUSY stays HIGH, which causes WaitBusyTransition to fail.
+  epd_phase_power_on_ms = 0;  // not measured here
 
   // DISPLAY_REFRESH — takes ~31s for 7-color.
   t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x12);  // DISPLAY_REFRESH
   EPD_7IN3F_SendData(0x00);
-  rc = EPD_7IN3F_WaitBusyTransition(2000, 60000);
+  int rc = EPD_7IN3F_WaitBusyTransition(2000, 60000);
   epd_phase_refresh_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
   if (rc != 0) {
@@ -417,7 +408,11 @@ ensures the controller is fully awake before data writes. parameter:
 ******************************************************************************/
 int EPD_7IN3F_PowerOn(void) {
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
-  return EPD_7IN3F_WaitBusyTransition(2000, 10000);
+  // Use ReadBusyH, NOT WaitBusyTransition.  POWER_ON brings up the HV boost
+  // and BUSY may or may not briefly pulse LOW — the original Waveshare driver
+  // just waits for HIGH.  WaitBusyTransition fails here because POWER_ON
+  // often completes without a visible LOW period (BUSY stays HIGH).
+  return EPD_7IN3F_ReadBusyH_timeout(10000);
 }
 
 /******************************************************************************
