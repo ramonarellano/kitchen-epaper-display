@@ -48,6 +48,8 @@
 
 // Defined in EPD_7in3f.c — incremented on ReadBusyH force-release timeout.
 extern volatile int epd_busy_force_released;
+// Defined in EPD_7in3f.c — BUSY pin state 2ms after Reset().
+extern volatile int epd_busy_after_reset;
 
 // ---------------------------------------------------------------------------
 // End configuration
@@ -373,13 +375,13 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v2", vbus);
+  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v3", vbus);
 
   // Initialize e-paper ONCE at boot.
   plog("EPD_INIT_BOOT");
   int boot_rc = EPD_7IN3F_Init();
-  plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d rc=%d", epd_busy_pin_at_init,
-           boot_rc);
+  plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d busy_after_rst=%d rc=%d",
+           epd_busy_pin_at_init, epd_busy_after_reset, boot_rc);
 
   while (1) {
     // LED status based on last result
@@ -475,8 +477,8 @@ int main(void) {
         }
         plog("FULL_REINIT");
         int init_rc = EPD_7IN3F_Init();
-        plog_fmt("REINIT_DONE busy_before=%d rc=%d attempt=%d",
-                 epd_busy_pin_at_init, init_rc, attempt);
+        plog_fmt("REINIT_DONE busy_before=%d busy_after_rst=%d rc=%d attempt=%d",
+                 epd_busy_pin_at_init, epd_busy_after_reset, init_rc, attempt);
         if (init_rc != 0) {
           plog_fmt("INIT_TIMEOUT attempt=%d", attempt);
           continue;
@@ -502,8 +504,8 @@ int main(void) {
         for (size_t _i = 0; _i < 32 && _i < IMAGE_SIZE; ++_i)
           img_sum += image_buffer[_i];
         char chkmsg[64];
-        snprintf(chkmsg, sizeof(chkmsg),
-                 "Image checksum (first 32 bytes): %lu", img_sum);
+        snprintf(chkmsg, sizeof(chkmsg), "Image checksum (first 32 bytes): %lu",
+                 img_sum);
         uart_log(chkmsg);
         int forced_before_display = epd_busy_force_released;
         absolute_time_t disp_t0 = get_absolute_time();

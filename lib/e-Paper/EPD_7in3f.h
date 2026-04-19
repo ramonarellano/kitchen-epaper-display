@@ -63,5 +63,8 @@ extern volatile int32_t epd_phase_refresh_ms;
 extern volatile int32_t epd_phase_power_off_ms;
 // BUSY pin state sampled at start of Init (before Reset).
 extern volatile int epd_busy_pin_at_init;
+// BUSY pin state sampled 2ms after Reset completes.
+// 0 = LOW (panel is resetting — good). 1 = HIGH (reset didn't take).
+extern volatile int epd_busy_after_reset;
 
 #endif

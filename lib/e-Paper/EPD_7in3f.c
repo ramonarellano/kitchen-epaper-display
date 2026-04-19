@@ -38,6 +38,10 @@ volatile int32_t epd_phase_refresh_ms = -1;
 volatile int32_t epd_phase_power_off_ms = -1;
 volatile int epd_busy_pin_at_init = -1;
 
+// BUSY pin state sampled immediately after Reset() completes.
+// 0 = LOW (panel is resetting — good), 1 = HIGH (reset didn't take effect).
+volatile int epd_busy_after_reset = -1;
+
 // Global flag: incremented each time ReadBusyH force-releases due to timeout.
 // Checked from main.c to detect incomplete e-paper operations.
 volatile int epd_busy_force_released = 0;
@@ -50,11 +54,13 @@ static void EPD_7IN3F_Reset(void) {
   DEV_Digital_Write(EPD_RST_PIN, 1);
   DEV_Delay_ms(20);
   DEV_Digital_Write(EPD_RST_PIN, 0);
-  DEV_Delay_ms(50);  // 50ms reset pulse (was 5ms) — panel needs longer to
-                     // wake from deep sleep
+  DEV_Delay_ms(50);  // 50ms reset pulse
   DEV_Digital_Write(EPD_RST_PIN, 1);
-  DEV_Delay_ms(300);  // 300ms post-reset (was 20ms) — give panel time to
-                      // restart oscillator and assert BUSY before we check it
+  DEV_Delay_ms(2);   // minimal delay before sampling BUSY
+  epd_busy_after_reset = DEV_Digital_Read(EPD_BUSY_PIN);
+  // If BUSY is LOW here, the panel responded to reset (good).
+  // If HIGH, the reset may not have taken effect.
+  DEV_Delay_ms(300);  // let panel oscillator start
 }
 
 /******************************************************************************
@@ -108,6 +114,34 @@ static int EPD_7IN3F_ReadBusyH_timeout(int timeout_ms) {
 static void EPD_7IN3F_ReadBusyH(void) {
   EPD_7IN3F_ReadBusyH_timeout(120000);
 }
+
+/******************************************************************************
+function :	Wait for BUSY to go LOW first, then wait for it to go HIGH.
+            This detects a real LOW→HIGH transition, avoiding the case where
+            BUSY is already HIGH (stuck/floating) and ReadBusyH returns
+            immediately without the panel actually being ready.
+parameter:
+  low_timeout_ms  : max wait for BUSY to go LOW (panel starts processing)
+  high_timeout_ms : max wait for BUSY to go HIGH (panel finishes processing)
+returns   : 0 on success, -1 never went LOW, -2 never went HIGH
+******************************************************************************/
+static int EPD_7IN3F_WaitBusyTransition(int low_timeout_ms,
+                                         int high_timeout_ms) {
+  int cnt = 0;
+  int low_limit = low_timeout_ms / 10;
+  // Phase 1: wait for BUSY to go LOW (panel acknowledges command)
+  while (DEV_Digital_Read(EPD_BUSY_PIN)) {  // HIGH = idle; wait for LOW
+    DEV_Delay_ms(10);
+    cnt++;
+    if (cnt > low_limit) {
+      printf("WaitBusyTransition: never went LOW after %d0 ms\r\n", cnt);
+      return -1;  // panel never started processing
+    }
+  }
+  printf("WaitBusyTransition: went LOW after %d0 ms\r\n", cnt);
+  // Phase 2: now wait for BUSY to go HIGH (panel finished)
+  return EPD_7IN3F_ReadBusyH_timeout(high_timeout_ms);
+}
 static void EPD_7IN3F_ReadBusyL(void) {
   printf("e-Paper busy L\r\n");
   while (DEV_Digital_Read(EPD_BUSY_PIN)) {  // LOW: idle, HIGH: busy
@@ -125,10 +159,11 @@ returns   : 0 on success, -1 POWER_ON timeout, -2 REFRESH timeout,
 static int EPD_7IN3F_TurnOnDisplay(void) {
   absolute_time_t t0;
 
-  // POWER_ON — should complete in <1s.  10s timeout.
+  // POWER_ON — should complete in <1s.
+  // Use WaitBusyTransition: if BUSY never goes LOW, the panel isn't responding.
   t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
-  int rc = EPD_7IN3F_ReadBusyH_timeout(10000);
+  int rc = EPD_7IN3F_WaitBusyTransition(2000, 10000);
   epd_phase_power_on_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
   if (rc != 0) {
@@ -139,11 +174,11 @@ static int EPD_7IN3F_TurnOnDisplay(void) {
     return -1;
   }
 
-  // DISPLAY_REFRESH — takes ~31s for 7-color.  60s timeout.
+  // DISPLAY_REFRESH — takes ~31s for 7-color.
   t0 = get_absolute_time();
   EPD_7IN3F_SendCommand(0x12);  // DISPLAY_REFRESH
   EPD_7IN3F_SendData(0x00);
-  rc = EPD_7IN3F_ReadBusyH_timeout(60000);
+  rc = EPD_7IN3F_WaitBusyTransition(2000, 60000);
   epd_phase_refresh_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
   if (rc != 0) {
@@ -179,13 +214,16 @@ returns   : 0 on success, -1 if panel didn't respond after reset
 int EPD_7IN3F_Init(void) {
   epd_busy_pin_at_init = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_Reset();
-  // After deep sleep, the panel needs time to restart its internal oscillator
-  // and assert BUSY LOW. Without this delay, ReadBusyH sees HIGH (idle)
-  // immediately and all subsequent commands are ignored by the still-sleeping
-  // panel — producing a 447ms "refresh" that doesn't physically update.
-  DEV_Delay_ms(100);
-  if (EPD_7IN3F_ReadBusyH_timeout(30000) != 0) {
-    return -1;  // panel didn't come up after reset
+  // After reset, BUSY should be LOW (panel initializing).  Wait for the
+  // full LOW→HIGH transition to confirm the panel actually restarted.
+  // If BUSY never goes LOW, the reset didn't take effect — we'll know
+  // from the return code and epd_busy_after_reset diagnostic.
+  DEV_Delay_ms(20);
+  int busy_rc = EPD_7IN3F_WaitBusyTransition(2000, 30000);
+  if (busy_rc != 0) {
+    printf("Init: WaitBusyTransition failed rc=%d, busy_after_reset=%d\r\n",
+           busy_rc, epd_busy_after_reset);
+    return busy_rc;  // -1 = never went LOW, -2 = never went HIGH
   }
   DEV_Delay_ms(30);
 
@@ -379,7 +417,7 @@ ensures the controller is fully awake before data writes. parameter:
 ******************************************************************************/
 int EPD_7IN3F_PowerOn(void) {
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
-  return EPD_7IN3F_ReadBusyH_timeout(10000);
+  return EPD_7IN3F_WaitBusyTransition(2000, 10000);
 }
 
 /******************************************************************************
