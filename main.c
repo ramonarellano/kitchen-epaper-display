@@ -477,8 +477,9 @@ int main(void) {
         }
         plog("FULL_REINIT");
         int init_rc = EPD_7IN3F_Init();
-        plog_fmt("REINIT_DONE busy_before=%d busy_after_rst=%d rc=%d attempt=%d",
-                 epd_busy_pin_at_init, epd_busy_after_reset, init_rc, attempt);
+        plog_fmt(
+            "REINIT_DONE busy_before=%d busy_after_rst=%d rc=%d attempt=%d",
+            epd_busy_pin_at_init, epd_busy_after_reset, init_rc, attempt);
         if (init_rc != 0) {
           plog_fmt("INIT_TIMEOUT attempt=%d", attempt);
           continue;

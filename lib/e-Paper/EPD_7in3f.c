@@ -56,7 +56,7 @@ static void EPD_7IN3F_Reset(void) {
   DEV_Digital_Write(EPD_RST_PIN, 0);
   DEV_Delay_ms(50);  // 50ms reset pulse
   DEV_Digital_Write(EPD_RST_PIN, 1);
-  DEV_Delay_ms(2);   // minimal delay before sampling BUSY
+  DEV_Delay_ms(2);  // minimal delay before sampling BUSY
   epd_busy_after_reset = DEV_Digital_Read(EPD_BUSY_PIN);
   // If BUSY is LOW here, the panel responded to reset (good).
   // If HIGH, the reset may not have taken effect.
@@ -126,7 +126,7 @@ parameter:
 returns   : 0 on success, -1 never went LOW, -2 never went HIGH
 ******************************************************************************/
 static int EPD_7IN3F_WaitBusyTransition(int low_timeout_ms,
-                                         int high_timeout_ms) {
+                                        int high_timeout_ms) {
   int cnt = 0;
   int low_limit = low_timeout_ms / 10;
   // Phase 1: wait for BUSY to go LOW (panel acknowledges command)
@@ -214,16 +214,16 @@ returns   : 0 on success, -1 if panel didn't respond after reset
 int EPD_7IN3F_Init(void) {
   epd_busy_pin_at_init = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_Reset();
-  // After reset, BUSY should be LOW (panel initializing).  Wait for the
-  // full LOW→HIGH transition to confirm the panel actually restarted.
-  // If BUSY never goes LOW, the reset didn't take effect — we'll know
-  // from the return code and epd_busy_after_reset diagnostic.
-  DEV_Delay_ms(20);
-  int busy_rc = EPD_7IN3F_WaitBusyTransition(2000, 30000);
-  if (busy_rc != 0) {
-    printf("Init: WaitBusyTransition failed rc=%d, busy_after_reset=%d\r\n",
-           busy_rc, epd_busy_after_reset);
-    return busy_rc;  // -1 = never went LOW, -2 = never went HIGH
+  // Reset() already includes a 300ms post-reset delay.  During that time
+  // the panel goes BUSY LOW (resetting) then back HIGH (ready).  So by
+  // the time we get here BUSY is already HIGH — just confirm it is.
+  // Do NOT use WaitBusyTransition here: the LOW→HIGH transition already
+  // happened inside Reset()'s 300ms delay.  Waiting for another LOW
+  // would time out every time.
+  if (EPD_7IN3F_ReadBusyH_timeout(30000) != 0) {
+    printf("Init: ReadBusyH failed, busy_after_reset=%d\r\n",
+           epd_busy_after_reset);
+    return -1;  // panel didn't come up after reset
   }
   DEV_Delay_ms(30);
 
