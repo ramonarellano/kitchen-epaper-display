@@ -238,12 +238,11 @@ void EPD_7IN3F_Init(void) {
 
 /******************************************************************************
 function :	Reload all register config WITHOUT hardware reset.
-			Use before each display cycle when the panel has been in
-			POWER_OFF standby for a long time (>minutes).  At <0.01µA
-			standby the controller SRAM loses register state.
-			This is the same register sequence as Init() minus
-			Reset() + ReadBusyH(), so the BUSY pin is not disturbed.
-parameter:
+                        Use before each display cycle when the panel has been in
+                        POWER_OFF standby for a long time (>minutes).  At
+<0.01µA standby the controller SRAM loses register state. This is the same
+register sequence as Init() minus Reset() + ReadBusyH(), so the BUSY pin is not
+disturbed. parameter:
 ******************************************************************************/
 void EPD_7IN3F_ReloadConfig(void) {
   EPD_7IN3F_SendCommand(0xAA);  // CMDH
@@ -330,6 +329,18 @@ void EPD_7IN3F_ReloadConfig(void) {
 
   EPD_7IN3F_SendCommand(0xE6);  // TSSET
   EPD_7IN3F_SendData(0x00);
+}
+
+/******************************************************************************
+function :	Power on the HV boost (0x04) and wait for BUSY.
+			Call after Init() and before Display() when the panel has been
+			in POWER_OFF for a long time.  GxEPD2 does this in _InitDisplay();
+			it ensures the controller is fully awake before data writes.
+parameter:
+******************************************************************************/
+void EPD_7IN3F_PowerOn(void) {
+  EPD_7IN3F_SendCommand(0x04);  // POWER_ON
+  EPD_7IN3F_ReadBusyH();
 }
 
 /******************************************************************************
