@@ -66,5 +66,12 @@ extern volatile int epd_busy_pin_at_init;
 // BUSY pin state sampled 2ms after Reset completes.
 // 0 = LOW (panel is resetting — good). 1 = HIGH (reset didn't take).
 extern volatile int epd_busy_after_reset;
+// BUSY pin state sampled immediately before/after the last POWER_ON (0x04)
+// command. Logged once after EPD_7IN3F_PowerOn() and again after Display().
+extern volatile int epd_busy_before_cmd04;
+extern volatile int epd_busy_after_cmd04;
+// BUSY pin state sampled immediately before/after DISPLAY_REFRESH (0x12).
+extern volatile int epd_busy_before_cmd12;
+extern volatile int epd_busy_after_cmd12;
 
 #endif

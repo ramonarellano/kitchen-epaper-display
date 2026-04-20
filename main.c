@@ -50,6 +50,12 @@
 extern volatile int epd_busy_force_released;
 // Defined in EPD_7in3f.c — BUSY pin state 2ms after Reset().
 extern volatile int epd_busy_after_reset;
+// Defined in EPD_7in3f.c — BUSY pin state immediately before/after
+// POWER_ON (0x04) and DISPLAY_REFRESH (0x12) inside TurnOnDisplay().
+extern volatile int epd_busy_before_cmd04;
+extern volatile int epd_busy_after_cmd04;
+extern volatile int epd_busy_before_cmd12;
+extern volatile int epd_busy_after_cmd12;
 
 // ---------------------------------------------------------------------------
 // End configuration
@@ -375,9 +381,10 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v3", vbus);
+  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v4", vbus);
 
-  // Initialize e-paper ONCE at boot.
+  // Initialize e-paper at boot so the first cycle starts from a known state.
+  // Later cycles still do a per-cycle re-init while Bug #15 is under test.
   plog("EPD_INIT_BOOT");
   int boot_rc = EPD_7IN3F_Init();
   plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d busy_after_rst=%d rc=%d",
@@ -485,7 +492,8 @@ int main(void) {
           continue;
         }
         int pon_rc = EPD_7IN3F_PowerOn();
-        plog_fmt("POWER_ON_PRE rc=%d attempt=%d", pon_rc, attempt);
+        plog_fmt("POWER_ON_PRE rc=%d busy=%d->%d attempt=%d", pon_rc,
+           epd_busy_before_cmd04, epd_busy_after_cmd04, attempt);
         if (pon_rc != 0) {
           plog_fmt("POWER_ON_TIMEOUT attempt=%d", attempt);
           continue;
@@ -520,6 +528,9 @@ int main(void) {
         plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
                  (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
                  (long)epd_phase_power_off_ms);
+        plog_fmt("EPD_BUSY_CMDS cmd04=%d->%d cmd12=%d->%d",
+           epd_busy_before_cmd04, epd_busy_after_cmd04,
+           epd_busy_before_cmd12, epd_busy_after_cmd12);
         // Real refresh: phase > 5s AND no timeout (rc==0 and no forced)
         int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
                             forced_during_display == 0)

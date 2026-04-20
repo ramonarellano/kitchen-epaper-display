@@ -42,6 +42,15 @@ volatile int epd_busy_pin_at_init = -1;
 // 0 = LOW (panel is resetting — good), 1 = HIGH (reset didn't take effect).
 volatile int epd_busy_after_reset = -1;
 
+// BUSY pin state sampled immediately before/after the last POWER_ON (0x04)
+// command. Logged once after EPD_7IN3F_PowerOn() and again after Display().
+volatile int epd_busy_before_cmd04 = -1;
+volatile int epd_busy_after_cmd04 = -1;
+
+// BUSY pin state sampled immediately before/after DISPLAY_REFRESH (0x12).
+volatile int epd_busy_before_cmd12 = -1;
+volatile int epd_busy_after_cmd12 = -1;
+
 // Global flag: incremented each time ReadBusyH force-releases due to timeout.
 // Checked from main.c to detect incomplete e-paper operations.
 volatile int epd_busy_force_released = 0;
@@ -165,7 +174,9 @@ static int EPD_7IN3F_TurnOnDisplay(void) {
   // Use ReadBusyH (not WaitBusyTransition) — if already powered,
   // BUSY stays HIGH and ReadBusyH returns instantly (harmless).
   t0 = get_absolute_time();
+  epd_busy_before_cmd04 = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
+  epd_busy_after_cmd04 = DEV_Digital_Read(EPD_BUSY_PIN);
   int rc = EPD_7IN3F_ReadBusyH_timeout(10000);
   epd_phase_power_on_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
@@ -177,8 +188,10 @@ static int EPD_7IN3F_TurnOnDisplay(void) {
 
   // DISPLAY_REFRESH — takes ~31s for 7-color.
   t0 = get_absolute_time();
+  epd_busy_before_cmd12 = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_SendCommand(0x12);  // DISPLAY_REFRESH
   EPD_7IN3F_SendData(0x00);
+  epd_busy_after_cmd12 = DEV_Digital_Read(EPD_BUSY_PIN);
   rc = EPD_7IN3F_WaitBusyTransition(2000, 60000);
   epd_phase_refresh_ms =
       (int32_t)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
@@ -417,7 +430,9 @@ has been in POWER_OFF for a long time.  GxEPD2 does this in _InitDisplay(); it
 ensures the controller is fully awake before data writes. parameter:
 ******************************************************************************/
 int EPD_7IN3F_PowerOn(void) {
+  epd_busy_before_cmd04 = DEV_Digital_Read(EPD_BUSY_PIN);
   EPD_7IN3F_SendCommand(0x04);  // POWER_ON
+  epd_busy_after_cmd04 = DEV_Digital_Read(EPD_BUSY_PIN);
   // Use ReadBusyH, NOT WaitBusyTransition.  POWER_ON brings up the HV boost
   // and BUSY may or may not briefly pulse LOW — the original Waveshare driver
   // just waits for HIGH.  WaitBusyTransition fails here because POWER_ON
