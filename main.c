@@ -24,7 +24,9 @@
 #define IMAGE_SIZE 192000
 
 // How often to request an image (in minutes)
-#define IMAGE_REQUEST_INTERVAL_MINUTES 15
+// Diagnostic run: shortened to 5 minutes to test whether Bug #15 depends
+// more on idle time than on refresh count.
+#define IMAGE_REQUEST_INTERVAL_MINUTES 5
 
 // Timeouts (milliseconds)
 #define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
@@ -381,7 +383,7 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v4", vbus);
+  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v4_5MIN", vbus);
 
   // Initialize e-paper at boot so the first cycle starts from a known state.
   // Later cycles still do a per-cycle re-init while Bug #15 is under test.
@@ -493,7 +495,7 @@ int main(void) {
         }
         int pon_rc = EPD_7IN3F_PowerOn();
         plog_fmt("POWER_ON_PRE rc=%d busy=%d->%d attempt=%d", pon_rc,
-           epd_busy_before_cmd04, epd_busy_after_cmd04, attempt);
+                 epd_busy_before_cmd04, epd_busy_after_cmd04, attempt);
         if (pon_rc != 0) {
           plog_fmt("POWER_ON_TIMEOUT attempt=%d", attempt);
           continue;
@@ -529,8 +531,8 @@ int main(void) {
                  (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
                  (long)epd_phase_power_off_ms);
         plog_fmt("EPD_BUSY_CMDS cmd04=%d->%d cmd12=%d->%d",
-           epd_busy_before_cmd04, epd_busy_after_cmd04,
-           epd_busy_before_cmd12, epd_busy_after_cmd12);
+                 epd_busy_before_cmd04, epd_busy_after_cmd04,
+                 epd_busy_before_cmd12, epd_busy_after_cmd12);
         // Real refresh: phase > 5s AND no timeout (rc==0 and no forced)
         int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
                             forced_during_display == 0)
@@ -545,9 +547,9 @@ int main(void) {
       plog("STANDBY last_sum=0");
       last_display_sum = 0;
       led_status_off();
-      // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request
-      // Log heartbeats every 10 minutes so we can verify the Pico survived
-      // the wait (these buffer into PLOG and flush at next cycle start).
+      // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request.
+      // Log heartbeats every 10 minutes when the interval is long enough
+      // so we can verify the Pico survived the wait.
       plog_fmt("WAIT_START min=%d", IMAGE_REQUEST_INTERVAL_MINUTES);
       for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
         if (i % 10 == 0 && i != IMAGE_REQUEST_INTERVAL_MINUTES) {
