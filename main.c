@@ -383,7 +383,7 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v4_5MIN", vbus);
+  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v4_5MIN_SPLIT", vbus);
 
   // Initialize e-paper at boot so the first cycle starts from a known state.
   // Later cycles still do a per-cycle re-init while Bug #15 is under test.
@@ -530,9 +530,10 @@ int main(void) {
         plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
                  (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
                  (long)epd_phase_power_off_ms);
-        plog_fmt("EPD_BUSY_CMDS cmd04=%d->%d cmd12=%d->%d",
-                 epd_busy_before_cmd04, epd_busy_after_cmd04,
-                 epd_busy_before_cmd12, epd_busy_after_cmd12);
+        plog_fmt("EPD_BUSY04 %d->%d", epd_busy_before_cmd04,
+                epd_busy_after_cmd04);
+        plog_fmt("EPD_BUSY12 %d->%d", epd_busy_before_cmd12,
+                epd_busy_after_cmd12);
         // Real refresh: phase > 5s AND no timeout (rc==0 and no forced)
         int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
                             forced_during_display == 0)
