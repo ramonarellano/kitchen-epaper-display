@@ -55,7 +55,7 @@ int EPD_7IN3F_PowerOn(void);
 void EPD_7IN3F_Clear(UBYTE color);
 void EPD_7IN3F_Show7Block(void);
 int EPD_7IN3F_Display(UBYTE* Image);
-void EPD_7IN3F_Sleep(void);
+int EPD_7IN3F_Sleep(void);
 
 // Phase timing (ms) from last TurnOnDisplay; -1 if not yet run.
 extern volatile int32_t epd_phase_power_on_ms;

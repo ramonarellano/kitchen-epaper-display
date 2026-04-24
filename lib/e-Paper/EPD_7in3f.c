@@ -509,9 +509,26 @@ int EPD_7IN3F_Display(UBYTE* Image) {
 
 /******************************************************************************
 function :	Enter sleep mode
+            Sends POWER_OFF (0x02) + waits for BUSY + DEEP_SLEEP (0x07 0xA5)
+            + 2000ms settle.  This is the canonical Waveshare park sequence.
+            POWER_OFF is sent unconditionally — if the panel is already
+            powered off from TurnOnDisplay, the command is harmless.
+            Only a hardware RST can wake the controller after this call.
 parameter:
+returns   : 0 on success, -1 if POWER_OFF BUSY wait timed out (sleep still
+            sent as best effort)
 ******************************************************************************/
-void EPD_7IN3F_Sleep(void) {
-  EPD_7IN3F_SendCommand(0x07);  // DEEP_SLEEP
-  EPD_7IN3F_SendData(0XA5);
+int EPD_7IN3F_Sleep(void) {
+  // POWER_OFF — collapse HV rails
+  EPD_7IN3F_SendCommand(0x02);
+  EPD_7IN3F_SendData(0x00);
+  int rc = EPD_7IN3F_ReadBusyH_timeout(10000);
+  epd_phase_power_off_ms = -2;  // sentinel: set by Sleep, not TurnOnDisplay
+
+  // DEEP_SLEEP — puts controller state machine to sleep.
+  // Only a hardware RST can return it to standby.
+  EPD_7IN3F_SendCommand(0x07);
+  EPD_7IN3F_SendData(0xA5);
+  DEV_Delay_ms(2000);  // Waveshare Python driver uses 2000ms post-sleep settle
+  return (rc == 0) ? 0 : -1;
 }

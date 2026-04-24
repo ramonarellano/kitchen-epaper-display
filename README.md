@@ -3,106 +3,177 @@
 [Original PhotoPainter Repository](https://github.com/waveshareteam/PhotoPainter)
 
 ## Overview
-This project provides firmware for a Raspberry Pi Pico (RP2040) that receives images from an ESP32 over UART and displays them on a Waveshare 7.3" e-Paper display. The firmware provides robust status feedback via onboard LEDs and logs messages to both UART and USB serial.
+
+This project provides the Raspberry Pi Pico (RP2040) firmware that requests a panel-ready raw image from the ESP32 over UART and renders it on a Waveshare 7.3 inch 7-color e-paper display.
+
+Current live protocol:
+
+1. Pico sends `SENDIMG\n` on UART1.
+2. ESP32 replies with `ACK\n` twice.
+3. ESP32 sends SOF `0xAA 0x55 0xAA 0x55`.
+4. ESP32 sends a 4-byte big-endian payload length.
+5. ESP32 streams 192000 raw bytes.
+6. Pico validates the framed payload and updates the panel.
+
+UART details:
+
+- UART: `uart1`
+- Baud rate: `115200`
+- Pico TX/RX pins: GPIO4/GPIO5
+- Image buffer size: `192000` bytes
+
+## Current Diagnostic Build
+
+- Firmware tag: `SLEEP_RESTORE_v1_5MIN`
+- Request interval: 5 minutes
+- Boot-time panel init followed by immediate `EPD_7IN3F_Sleep()` to park the panel
+- Per-cycle `FULL_REINIT` (hardware RST wakes from deep sleep + full register reload)
+- Explicit `POWER_ON (0x04)` immediately before `DISPLAY_REFRESH (0x12)`
+- `EPD_7IN3F_Sleep()` after every display cycle: `POWER_OFF (0x02)` + `DEEP_SLEEP (0x07 0xA5)` + 2000ms settle
+- Split BUSY probes: `EPD_BUSY04` and `EPD_BUSY12`
+
+This build restores the canonical Waveshare panel lifecycle (`Init → display → POWER_OFF → DEEP_SLEEP → RST → Init`) based on external research confirming that skipping `0x07 DEEP_SLEEP` causes progressive controller state corruption.
 
 ## Main Features
 
-- **UART Handshake with ESP32:**
-  - Uses UART1 (GPIO 4/5) for both handshake and image transfer: Pico sends `HELLO ESP32`, waits for `HELLO RP2040` reply, then requests image data over the same connection.
-  - Retries handshake up to 5 times, then displays a fallback image if unsuccessful.
-  - Continues retrying handshake in the background until it succeeds, then proceeds to image transfer.
+- Robust framed UART receive path with ACK, SOF, size-header, and payload validation.
+- Per-cycle display re-init with retry logic for `Init()` and `PowerOn()` timeouts.
+- Split BUSY-pin instrumentation around `POWER_ON (0x04)` and `DISPLAY_REFRESH (0x12)`.
+- Remote Pico logging (PLOG) flushed to the ESP32 before each `SENDIMG`.
+- USB serial diagnostics and onboard LED status patterns.
+- Small host-side ACK parser test in `tests/test_ack.c`.
 
-- **Image Transfer via UART:**
-  - Uses UART1 (GPIO 4/5) for image transfer.
-  - Pico requests an image from the ESP32 by sending `SENDIMG` over UART1.
-  - Waits for image data (with a 5-second timeout).
-  # Kitchen e-Paper Display Firmware
+## Key Files
 
-  [Original PhotoPainter Repository](https://github.com/waveshareteam/PhotoPainter)
+- `main.c` - Pico main loop, UART protocol, retries, and PLOG
+- `lib/e-Paper/EPD_7in3f.c` - display driver and BUSY instrumentation
+- `lib/e-Paper/EPD_7in3f.h` - exported driver interfaces and diagnostic globals
+- `tests/test_ack.c` - host-side ACK detection test
 
-  ## Overview
+## Configuration
 
-  This project provides firmware for a Raspberry Pi Pico (RP2040) that receives images from an ESP32 over UART and displays them on a Waveshare 7.3" e-Paper display. The firmware provides robust status feedback via onboard LEDs and logs messages to both UART and USB serial.
+The main tunables live at the top of `main.c`.
 
-  ## Recent changes (refactor & debugging)
+- `IMAGE_REQUEST_INTERVAL_MINUTES` - currently `5`
+- `ACK_TIMEOUT_MS` - currently `10000`
+- `SOF_TIMEOUT_MS` - currently `60000`
+- `DATA_TIMEOUT_MS` - currently `180000`
+- `RETRY_WAIT_MS` - currently `30000`
+- `POST_SEND_DELAY_MS` - currently `20`
+- `ACK_BUFFER_SIZE` - currently `64`
+- `PICO_UART_LOGGING` - set to `0` to disable remote logging
 
-  - **Fixed: display only refreshing once after power-on.** `EPD_7IN3F_Sleep()` put the panel into deep sleep where the BUSY pin floats HIGH. On subsequent `Init()` calls, `ReadBusyH()` returned instantly, causing `Display()` to complete in ~447ms (SPI transfer only) with no physical refresh. The fix removes the deep-sleep call entirely; `TurnOnDisplay()` already sends POWER_OFF (0x02) which keeps the panel in low-power standby (~50µA) that `Init()` can wake from reliably.
-  - **Fixed: display only refreshing on the first cycle (Bug #15).** After POWER_OFF (0x02), calling `Init()` + hardware `Reset()` corrupts the BUSY pin state — subsequent `ReadBusyH()` calls return in 0ms, producing 447ms bogus refreshes with `pwr_on=0 refresh=0 pwr_off=0`. The fix moves `Init()` to boot only (called once), matching the Waveshare demo pattern. POWER_OFF preserves register config; `TurnOnDisplay()` re-powers on each cycle with POWER_ON (0x04).
-  - **Fix: per-cycle soft re-init (Bug #15 reopened, fw=SOFT_REINIT_v1).** Init-once doesn't survive 60-minute POWER_OFF idle — panel SRAM registers decay at <0.01µA standby. New `EPD_7IN3F_ReloadConfig()` re-sends all register commands before each display cycle WITHOUT hardware reset, matching the GxEPD2 `_InitDisplay()` pattern.
-  - **Fix: full hardware re-init + PowerOn per cycle (fw=FULL_REINIT_v1).** Soft re-init failed — controller ignores SPI after 60-min POWER_OFF. Now does full `Init()` (hardware reset with 50ms/300ms timing) + explicit `PowerOn()` before data writes, matching GxEPD2's exact sequence. Partially successful: 4 healthy refreshes before BUSY stuck.
-  - **Fix iteration: abort-on-timeout + retry + scoped WaitBusyTransition (fw=FULL_REINIT_v3).** `WaitBusyTransition` (require LOW→HIGH) is only used for DISPLAY_REFRESH. `ReadBusyH` is used for Init (after Reset), PowerOn, and POWER_OFF. This avoided earlier misapplication of `WaitBusyTransition`, but later logs showed that removing `POWER_ON` from `TurnOnDisplay()` was not a stable final fix.
-  - **Current diagnostic build (fw=FULL_REINIT_v4_5MIN_SPLIT).** Keeps the 5-minute interval from `FULL_REINIT_v4_5MIN`, but splits the BUSY probe into two short PLOG lines: `EPD_BUSY04 A->B` and `EPD_BUSY12 C->D`. The previous combined `EPD_BUSY_CMDS` line was being truncated in the persisted ESP32 log, which made the `cmd12` result unreliable.
-  - Centralized configuration at the top of `main.c` (all timeouts and buffer sizes in one place).
-  - Robust ACK detection and ACK timeout increased to 10s; SOF and data-timeout handling improved.
-  - Removed fallback-image display (simplified flow) and made timeouts wait-and-retry in a consistent way.
-  - Added a small host-test (`tests/test_ack.c`) that validates ACK substring detection.
-  - Added EPD phase-level timing (`EPD_PHASES pwr_on=X refresh=Y pwr_off=Z`) and `REFRESH_VERDICT real=0/1` to diagnose whether a display refresh actually occurred.
-  - BUSY pin state is now sampled before `Init()` and logged as `busy_before=X` to detect floating-HIGH conditions.
-  - PLOG heartbeats (`WAIT_TICK`) logged every 10 minutes during the 60-minute idle wait to confirm the Pico survived.
+## Remote Logging (PLOG)
 
-  ## Main Features
+The Pico buffers diagnostic log lines locally and flushes them to the ESP32 over UART immediately before the next `SENDIMG`. The ESP32 stores them in SPIFFS with a `[PICO]` prefix.
 
-  - UART handshake and image request/transfer between Pico (UART1, GPIO4/5) and ESP32.
-  - Robust framing: the receiver looks for a Start-Of-Frame (SOF), reads a 4-byte length header, then reads the payload with timeouts and logging.
-  - LED status patterns and USB serial logging for diagnostics.
+Common events in the current firmware:
 
-  ## Configuration (quick reference)
+- `BOOT vbus=X fw=SLEEP_RESTORE_v1_5MIN`
+- `EPD_INIT_BOOT`
+- `EPD_INIT_BOOT_DONE busy_before=X busy_after_rst=Y rc=Z`
+- `EPD_BOOT_SLEEP rc=X`
+- `CYCLE N vbus=X last_sum=Y attempts=Z`
+- `SENDIMG_START`
+- `SENDIMG_RESULT rc=X recv=Y`
+- `DISPLAY chk=X bytes=Y first4=Z`
+- `FULL_REINIT`
+- `REINIT_DONE busy_before=X busy_after_rst=Y rc=Z attempt=Z`
+- `POWER_ON_PRE rc=X busy=A->B attempt=Y`
+- `DISPLAY_DONE ms=X forced=Y rc=Z`
+- `EPD_PHASES pwr_on=X refresh=Y pwr_off=Z`
+- `EPD_BUSY04 A->B`
+- `EPD_BUSY12 C->D`
+- `REFRESH_VERDICT real=0/1 refresh_ms=X disp_rc=Y`
+- `EPD_SLEEP rc=X`
+- `WAIT_START min=X`
+- `WAIT_TICK min_left=X` when the configured wait is long enough
+- `WAIT_DONE`
+- `RECV_TIMEOUT retry attempts=N`
+- `RECV_FAIL rc=X attempts=N`
 
-  Edit `main.c` to tune these values at the top of the file (or change via your build system):
+Notes:
 
-  - `UART_BAUD` — UART baud rate (default 115200)
-  - `ACK_TIMEOUT_MS` — how long to wait for ACK (default 10000 ms)
-  - `SOF_TIMEOUT_MS` — wait for SOF (default 60000 ms)
-  - `DATA_TIMEOUT_MS` — overall image-data timeout (default 180000 ms)
-  - `RETRY_WAIT_MS` — how long to wait after a timeout before retrying (default 30000 ms)
-  - `POST_SEND_DELAY_MS` — small delay after sending `SENDIMG` (default 20 ms)
-  - `ACK_BUFFER_SIZE` — temporary buffer for incoming ACK lines
+- `SKIP` and `SKIP_WAIT_START` should not appear in the current diagnostic build. `last_display_sum` is reset to `0` after each cycle, so duplicate-skip behavior is effectively disabled during this investigation.
+- Always fetch ESP32-side persisted logs with `python3 fetch_and_clear_logs.py` from the ESP32 repo.
 
-  ## Remote Logging (PLOG)
+## Display Constraints
 
-  The Pico can send diagnostic messages to the ESP32 over UART, which stores them in its persistent SPIFFS log. This allows full Pico-side visibility without a USB connection.
+These constraints are established by the current analysis and external research (see `summary/ai-report.md` and `ANALYSIS.md`).
 
-  - Controlled by the `PICO_UART_LOGGING` flag at the top of `main.c` (set to `0` to disable).
-  - Messages are buffered during Pico processing and flushed to the ESP32 right before each `SENDIMG`, when the ESP32 is awake and listening.
-  - Events logged: `BOOT vbus=X fw=FULL_REINIT_v4_5MIN_SPLIT`, `EPD_INIT_BOOT`, `EPD_INIT_BOOT_DONE busy_before=X busy_after_rst=Y rc=Z`, `SENDIMG_START`, `SENDIMG_RESULT rc=X recv=Y`, `DISPLAY chk=X bytes=Y`, `POWER_ON_PRE rc=X busy=A->B attempt=Y`, `DISPLAY_DONE ms=X forced=Y rc=Z`, `EPD_PHASES pwr_on=X refresh=Y pwr_off=Z`, `EPD_BUSY04 A->B`, `EPD_BUSY12 C->D`, `REFRESH_VERDICT real=0/1 refresh_ms=X disp_rc=Y`, `STANDBY last_sum=0`, `WAIT_START`, `WAIT_TICK min_left=X`, `WAIT_DONE`, `SKIP chk=X last=Y`, `RECV_TIMEOUT retry attempts=N`, `RECV_FAIL rc=X attempts=N`.
-  - Retrieve logs from the ESP32 using `python3 fetch_and_clear_logs.py` in the ESP32 repo.
+1. `EPD_7IN3F_Sleep()` must be called after every display cycle.
+  - The canonical Waveshare lifecycle is: `Init → display → POWER_OFF → DEEP_SLEEP → RST → Init`.
+  - Skipping `DEEP_SLEEP (0x07)` leaves the controller's analog rails in a half-de-energized state that causes progressive booster/VCOM failures.
+  - Only a hardware RST can wake the controller from deep sleep.
 
-  ## Running the unit tests (host)
+2. `POWER_OFF (0x02)` must still be sent after each refresh.
+  - This protects the panel from being left powered.
 
-  There is a small host-buildable test to validate the ACK-detection logic.
+3. Hardware RST must use sufficient timing to wake from deep sleep.
+  - Current: 50ms low + 300ms settle (well above the 10ms minimum).
 
-  Build and run:
+4. A healthy 7-color refresh takes about 31 seconds.
+  - Healthy cycles look like `DISPLAY_DONE ms=31197..31207` and `refresh=30600..30610`.
+  - Bogus cycles look like `DISPLAY_DONE ms=2457` and `refresh=2010`.
 
-  ```bash
-  gcc tests/test_ack.c -o tests/test_ack
-  ./tests/test_ack
-  ```
+## Build And Flash
 
-  Expected output: `All contains_ack tests passed`.
+Preferred:
 
-  ## Debugging the display update issue
+```sh
+./build_and_flash.sh
+```
 
-  If the log prints `Image received` and `EPD_7IN3F_Display() done` but the panel doesn't visibly update after the first run, try the following:
+Manual build:
 
-  1. Make sure `DISABLE_DISPLAY_SLEEP` is not forcing deep-sleep too early. The code now waits a short time (5s) after `EPD_7IN3F_Display()` before sleeping; you can skip sleeping by defining `DISABLE_DISPLAY_SLEEP`.
-  2. Verify `img_size` matches the expected buffer size (driver's WidthBytes × Height). The driver uses 4-bit-per-pixel packing (two pixels per byte) — confirm the ESP32 produces the same packing.
-  3. Try showing a forced test pattern (all 0xFF or all 0x00) and see whether the display changes. If it does, the issue is likely pixel packing or order.
-  4. If updates work when skipping sleep but not otherwise, increase the delay or keep sleep disabled until you confirm the proper refresh sequence.
+```sh
+mkdir -p build
+cd build
+cmake ..
+make -j$(nproc)
+```
 
-  ## Recommended framing and sender example (ESP32)
+Then flash the UF2:
 
-  Use a binary framing that both sides agree on. The current examples in the repo use a SOF, a 4-byte length, and raw payload. See `README` above for an Arduino-style sender stub.
+```sh
+cp epd.uf2 /Volumes/RPI-RP2/
+```
 
-  ## Building and flashing
+## Host-Side Test
 
-  Follow the existing steps in `build_and_flash.sh`. The project expects a Pico SDK environment for full cross-compilation. For host-side testing use the small tests in `tests/`.
+There is a small host-buildable test that validates ACK detection.
 
-  ## Troubleshooting tips
+```sh
+gcc tests/test_ack.c -o tests/test_ack
+./tests/test_ack
+```
 
-  - Enable verbose USB-serial logs to capture the checksum and first bytes of the incoming image — this helps verify the producer (ESP32) is sending what the Pico expects.
-  - Use a logic analyzer for stubborn issues: capture the TTL UART bytes and inspect timing, stray bytes, or missing frames.
-  - If you need help converting an image format from the ESP32 to the driver's 4-bit-per-pixel packing, share the ESP32 sender code or a sample dump and I can propose a converter.
+Expected output:
 
-  ---
+```text
+All contains_ack tests passed
+```
 
-  If you want, I can add a short section describing how to add the `-DDISABLE_DISPLAY_SLEEP` flag into your current CMake flow (or I can open a small PR that makes it configurable in CMake).*** End Patch
+## Current Debugging Focus
+
+The active investigation is Bug #15: the panel can refresh correctly for several cycles and then stop performing a real physical refresh even though image transfer still succeeds.
+
+Useful signatures:
+
+- Healthy cycle:
+  - `POWER_ON_PRE rc=0 busy=1->0`
+  - `DISPLAY_DONE ms=31197..31207 rc=0`
+  - `EPD_PHASES pwr_on=0 refresh=30600..30610 pwr_off=150`
+  - `EPD_BUSY04 1->0`
+
+- Failure mode A:
+  - `POWER_ON_PRE rc=0 busy=1->1`
+  - `DISPLAY_DONE ms=2457 rc=-2`
+  - `EPD_PHASES pwr_on=0 refresh=2010 pwr_off=0`
+  - `EPD_BUSY04 1->1`
+
+- Failure mode B:
+  - `POWER_ON_PRE rc=0 busy=1->0`
+  - `DISPLAY_DONE ms=2457 rc=-2`
+  - `EPD_PHASES pwr_on=0 refresh=2010 pwr_off=0`
+  - `EPD_BUSY04 1->0`

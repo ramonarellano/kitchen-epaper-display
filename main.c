@@ -383,7 +383,7 @@ int main(void) {
   unsigned int cycle_count = 0;
   unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=FULL_REINIT_v4_5MIN_SPLIT", vbus);
+  plog_fmt("BOOT vbus=%d fw=SLEEP_RESTORE_v1_5MIN", vbus);
 
   // Initialize e-paper at boot so the first cycle starts from a known state.
   // Later cycles still do a per-cycle re-init while Bug #15 is under test.
@@ -391,6 +391,13 @@ int main(void) {
   int boot_rc = EPD_7IN3F_Init();
   plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d busy_after_rst=%d rc=%d",
            epd_busy_pin_at_init, epd_busy_after_reset, boot_rc);
+  // Park the panel into deep sleep immediately after boot init so the
+  // first cycle wakes from a known deep-sleep state via RST, matching
+  // the canonical Waveshare lifecycle.
+  if (boot_rc == 0) {
+    int sleep_rc = EPD_7IN3F_Sleep();
+    plog_fmt("EPD_BOOT_SLEEP rc=%d", sleep_rc);
+  }
 
   while (1) {
     // LED status based on last result
@@ -531,9 +538,9 @@ int main(void) {
                  (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
                  (long)epd_phase_power_off_ms);
         plog_fmt("EPD_BUSY04 %d->%d", epd_busy_before_cmd04,
-                epd_busy_after_cmd04);
+                 epd_busy_after_cmd04);
         plog_fmt("EPD_BUSY12 %d->%d", epd_busy_before_cmd12,
-                epd_busy_after_cmd12);
+                 epd_busy_after_cmd12);
         // Real refresh: phase > 5s AND no timeout (rc==0 and no forced)
         int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
                             forced_during_display == 0)
@@ -544,8 +551,16 @@ int main(void) {
         uart_log("Image displayed");
         last_status_ok = 1;
       }
-      // Standby + wait (always, whether display succeeded or was skipped)
-      plog("STANDBY last_sum=0");
+      // Deep-sleep + wait (always, whether display succeeded or was skipped).
+      // EPD_7IN3F_Sleep sends 0x02 POWER_OFF + 0x07 DEEP_SLEEP + 0xA5.
+      // TurnOnDisplay already sent POWER_OFF, but the redundant 0x02 is
+      // harmless and ensures the panel is parked even after error paths.
+      // The next cycle's Init() will issue a hardware RST to wake from
+      // deep sleep — this is the canonical Waveshare lifecycle.
+      {
+        int sleep_rc = EPD_7IN3F_Sleep();
+        plog_fmt("EPD_SLEEP rc=%d", sleep_rc);
+      }
       last_display_sum = 0;
       led_status_off();
       // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request.
