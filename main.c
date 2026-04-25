@@ -23,10 +23,8 @@
 // display.
 #define IMAGE_SIZE 192000
 
-// How often to request an image (in minutes)
-// Diagnostic run: shortened to 5 minutes to test whether Bug #15 depends
-// more on idle time than on refresh count.
-#define IMAGE_REQUEST_INTERVAL_MINUTES 5
+// How many times to retry image request before giving up this cycle
+#define MAX_IMAGE_RETRIES 3
 
 // Timeouts (milliseconds)
 #define ACK_TIMEOUT_MS 10000    // wait up to 10s for ACK
@@ -98,10 +96,9 @@ void uart_log(const char* msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Remote logging: buffer messages and send to ESP32 before next SENDIMG.
-// The ESP32 is in deep sleep during Pico processing, so we must defer
-// sending until right before the next image request, when the ESP32 is
-// awake and listening on Serial1.
+// Remote logging: buffer messages and send to ESP32 via UART.
+// Flushed before SENDIMG and before PICODONE so the ESP32 captures all
+// diagnostic data before cutting our power.
 // ---------------------------------------------------------------------------
 #if PICO_UART_LOGGING
 #define PLOG_BUFFER_SIZE 4096
@@ -376,226 +373,123 @@ int main(void) {
   gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
   sleep_ms(1000);  // Wait for USB-CDC
 
-  uart_log("System started");
+  uart_log("System started — one-shot mode");
   static uint8_t image_buffer[IMAGE_SIZE];
-  int last_status_ok = 0;  // 1=ok, 0=error
-  unsigned long last_display_sum = 0;
-  unsigned int cycle_count = 0;
-  unsigned int total_sendimg_attempts = 0;
   int vbus = gpio_get(24);  // VBUS: 1=USB host, 0=wall/battery
-  plog_fmt("BOOT vbus=%d fw=SLEEP_RESTORE_v1_5MIN", vbus);
+  plog_fmt("BOOT vbus=%d fw=POWER_CYCLE_v1", vbus);
 
-  // Initialize e-paper at boot so the first cycle starts from a known state.
-  // Later cycles still do a per-cycle re-init while Bug #15 is under test.
-  plog("EPD_INIT_BOOT");
-  int boot_rc = EPD_7IN3F_Init();
-  plog_fmt("EPD_INIT_BOOT_DONE busy_before=%d busy_after_rst=%d rc=%d",
-           epd_busy_pin_at_init, epd_busy_after_reset, boot_rc);
-  // Park the panel into deep sleep immediately after boot init so the
-  // first cycle wakes from a known deep-sleep state via RST, matching
-  // the canonical Waveshare lifecycle.
-  if (boot_rc == 0) {
-    int sleep_rc = EPD_7IN3F_Sleep();
-    plog_fmt("EPD_BOOT_SLEEP rc=%d", sleep_rc);
+  // Clear image buffer
+  memset(image_buffer, 0xFF, IMAGE_SIZE);
+
+  // Flush any buffered PLOG lines to ESP32 before sending SENDIMG.
+  plog_flush();
+
+  // Try to request and receive image (retry up to MAX_IMAGE_RETRIES times)
+  int recv_result = -1;
+  int attempts;
+  for (attempts = 1; attempts <= MAX_IMAGE_RETRIES; attempts++) {
+    plog_fmt("SENDIMG_START attempt=%d", attempts);
+    recv_result = request_and_receive_image(image_buffer, IMAGE_SIZE);
+    plog_fmt("SENDIMG_RESULT rc=%d recv=%u attempt=%d", recv_result,
+             (unsigned)last_receive_count, attempts);
+    if (recv_result == 0) break;  // success
+    if (recv_result == -1) break; // fatal, don't retry
+    // recv_result == -2: timeout, retry
+    plog_fmt("RECV_TIMEOUT attempt=%d", attempts);
   }
 
-  while (1) {
-    // LED status based on last result
-    if (last_status_ok) {
-      led_status_ok();
-    } else {
-      led_status_error();
+  if (recv_result == 0) {
+    led_status_transferring();
+    uart_log("Displaying image");
+
+    // Debug: print first 32 bytes
+    char hexbuf[3 * 32 + 1] = {0};
+    for (int i = 0; i < 32; ++i) {
+      snprintf(hexbuf + i * 3, 4, "%02X ", image_buffer[i]);
     }
-    // Clear image buffer to avoid leftover pixels from previous transfers
-    memset(image_buffer, 0xFF, IMAGE_SIZE);
+    uart_log("First 32 bytes of image_buffer:");
+    uart_log(hexbuf);
 
-    // Log cycle diagnostics
-    cycle_count++;
-    total_sendimg_attempts++;
-    vbus = gpio_get(24);
-    plog_fmt("CYCLE %u vbus=%d last_sum=%lu attempts=%u", cycle_count, vbus,
-             last_display_sum, total_sendimg_attempts);
+    plog_fmt("DISPLAY chk=0 bytes=%u first4=%02X%02X%02X%02X",
+             (unsigned)last_receive_count, image_buffer[0], image_buffer[1],
+             image_buffer[2], image_buffer[3]);
 
-    // Flush any buffered PLOG lines to ESP32 before sending SENDIMG.
-    // The ESP32 is awake and listening at this point.
-    plog_flush();
-
-    // Try to request and receive image
-    plog("SENDIMG_START");
-    int recv_result = request_and_receive_image(image_buffer, IMAGE_SIZE);
-    plog_fmt("SENDIMG_RESULT rc=%d recv=%u", recv_result,
-             (unsigned)last_receive_count);
-    if (recv_result == 0) {
-      // Indicate transfer in progress
-      led_status_transferring();
-      uart_log("Displaying image");
-      // Debug: print first 32 bytes of image_buffer
-      char hexbuf[3 * 32 + 1] = {0};
-      for (int i = 0; i < 32; ++i) {
-        snprintf(hexbuf + i * 3, 4, "%02X ", image_buffer[i]);
+    // Full hardware re-init + PowerOn before display.
+    // Retry up to 3 times if Init or PowerOn times out.
+#define MAX_REINIT_RETRIES 3
+    int reinit_ok = 0;
+    for (int attempt = 1; attempt <= MAX_REINIT_RETRIES; attempt++) {
+      if (attempt > 1) {
+        plog_fmt("REINIT_RETRY attempt=%d", attempt);
+        DEV_Delay_ms(1000);
       }
-      uart_log("First 32 bytes of image_buffer:");
-      uart_log(hexbuf);
-      // Log final received count so it's clear we read the whole image (not
-      // just the last periodic progress log which prints at 4096-byte
-      // intervals).
-      char finalrcv[64];
-      snprintf(finalrcv, sizeof(finalrcv), "Final received: %u/%u bytes",
-               (unsigned)last_receive_count, (unsigned)IMAGE_SIZE);
-      uart_log(finalrcv);
-
-      // Compute a simple checksum of the full received image to detect
-      // identical images (avoid unnecessary redisplay which can be slow).
-      unsigned long full_sum = 0;
-      for (size_t i = 0; i < last_receive_count; ++i)
-        full_sum += image_buffer[i];
-      char summsg[80];
-      snprintf(summsg, sizeof(summsg), "Full image checksum: %lu", full_sum);
-      uart_log(summsg);
-
-      if (last_display_sum != 0 && full_sum == last_display_sum) {
-        plog_fmt("SKIP chk=%lu last=%lu bytes=%u", full_sum, last_display_sum,
-                 (unsigned)last_receive_count);
-        uart_log(
-            "Image identical to last displayed image — skipping redisplay");
-        last_status_ok = 1;
-        // wait IMAGE_REQUEST_INTERVAL_MINUTES before next request
-        plog_fmt("SKIP_WAIT_START min=%d", IMAGE_REQUEST_INTERVAL_MINUTES);
-        for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
-          if (i % 10 == 0 && i != IMAGE_REQUEST_INTERVAL_MINUTES) {
-            plog_fmt("WAIT_TICK min_left=%d", i);
-          }
-          char msg[64];
-          snprintf(msg, sizeof(msg), "Next update in %d minute%s...", i,
-                   (i == 1) ? "" : "s");
-          uart_log(msg);
-          for (int j = 0; j < 60; ++j) {
-            sleep_ms(1000);
-          }
-        }
-        plog("WAIT_DONE");
+      plog("FULL_REINIT");
+      int init_rc = EPD_7IN3F_Init();
+      plog_fmt("REINIT_DONE busy_before=%d busy_after_rst=%d rc=%d attempt=%d",
+               epd_busy_pin_at_init, epd_busy_after_reset, init_rc, attempt);
+      if (init_rc != 0) {
+        plog_fmt("INIT_TIMEOUT attempt=%d", attempt);
         continue;
       }
-      plog_fmt("DISPLAY chk=%lu bytes=%u first4=%02X%02X%02X%02X", full_sum,
-               (unsigned)last_receive_count, image_buffer[0], image_buffer[1],
-               image_buffer[2], image_buffer[3]);
-      // Full hardware re-init + PowerOn before each display cycle.
-      // Retry up to 3 times if Init or PowerOn times out.
-      // Previous version (v1) forced through stuck BUSY, which corrupted
-      // the panel's state machine.  v2 aborts on timeout and retries
-      // with a fresh hardware reset.
-#define MAX_REINIT_RETRIES 3
-      int reinit_ok = 0;
-      for (int attempt = 1; attempt <= MAX_REINIT_RETRIES; attempt++) {
-        if (attempt > 1) {
-          plog_fmt("REINIT_RETRY attempt=%d", attempt);
-          DEV_Delay_ms(1000);  // extra settle time between retries
-        }
-        plog("FULL_REINIT");
-        int init_rc = EPD_7IN3F_Init();
-        plog_fmt(
-            "REINIT_DONE busy_before=%d busy_after_rst=%d rc=%d attempt=%d",
-            epd_busy_pin_at_init, epd_busy_after_reset, init_rc, attempt);
-        if (init_rc != 0) {
-          plog_fmt("INIT_TIMEOUT attempt=%d", attempt);
-          continue;
-        }
-        int pon_rc = EPD_7IN3F_PowerOn();
-        plog_fmt("POWER_ON_PRE rc=%d busy=%d->%d attempt=%d", pon_rc,
-                 epd_busy_before_cmd04, epd_busy_after_cmd04, attempt);
-        if (pon_rc != 0) {
-          plog_fmt("POWER_ON_TIMEOUT attempt=%d", attempt);
-          continue;
-        }
-        reinit_ok = 1;
-        break;
+      int pon_rc = EPD_7IN3F_PowerOn();
+      plog_fmt("POWER_ON_PRE rc=%d busy=%d->%d attempt=%d", pon_rc,
+               epd_busy_before_cmd04, epd_busy_after_cmd04, attempt);
+      if (pon_rc != 0) {
+        plog_fmt("POWER_ON_TIMEOUT attempt=%d", attempt);
+        continue;
       }
-      if (!reinit_ok) {
-        plog("REINIT_FAILED — skipping display this cycle");
-        uart_log("Init+PowerOn failed after retries — skipping display");
-        last_status_ok = 0;
-      } else {
-        epd_busy_force_released = 0;  // reset before Display
-        // Log a simple checksum so we can verify the buffer changes between
-        // updates. This helps detect whether the same image is being sent.
-        unsigned long img_sum = 0;
-        for (size_t _i = 0; _i < 32 && _i < IMAGE_SIZE; ++_i)
-          img_sum += image_buffer[_i];
-        char chkmsg[64];
-        snprintf(chkmsg, sizeof(chkmsg), "Image checksum (first 32 bytes): %lu",
-                 img_sum);
-        uart_log(chkmsg);
-        int forced_before_display = epd_busy_force_released;
-        absolute_time_t disp_t0 = get_absolute_time();
-        int disp_rc = EPD_7IN3F_Display(image_buffer);
-        int64_t disp_us = absolute_time_diff_us(disp_t0, get_absolute_time());
-        int forced_during_display =
-            epd_busy_force_released - forced_before_display;
-        uart_log("EPD_7IN3F_Display() done");
-        plog_fmt("DISPLAY_DONE ms=%lld forced=%d rc=%d", disp_us / 1000,
-                 forced_during_display, disp_rc);
-        plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
-                 (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
-                 (long)epd_phase_power_off_ms);
-        plog_fmt("EPD_BUSY04 %d->%d", epd_busy_before_cmd04,
-                 epd_busy_after_cmd04);
-        plog_fmt("EPD_BUSY12 %d->%d", epd_busy_before_cmd12,
-                 epd_busy_after_cmd12);
-        // Real refresh: phase > 5s AND no timeout (rc==0 and no forced)
-        int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
-                            forced_during_display == 0)
-                               ? 1
-                               : 0;
-        plog_fmt("REFRESH_VERDICT real=%d refresh_ms=%ld disp_rc=%d",
-                 real_refresh, (long)epd_phase_refresh_ms, disp_rc);
-        uart_log("Image displayed");
-        last_status_ok = 1;
-      }
-      // Deep-sleep + wait (always, whether display succeeded or was skipped).
-      // EPD_7IN3F_Sleep sends 0x02 POWER_OFF + 0x07 DEEP_SLEEP + 0xA5.
-      // TurnOnDisplay already sent POWER_OFF, but the redundant 0x02 is
-      // harmless and ensures the panel is parked even after error paths.
-      // The next cycle's Init() will issue a hardware RST to wake from
-      // deep sleep — this is the canonical Waveshare lifecycle.
-      {
-        int sleep_rc = EPD_7IN3F_Sleep();
-        plog_fmt("EPD_SLEEP rc=%d", sleep_rc);
-      }
-      last_display_sum = 0;
-      led_status_off();
-      // Wait IMAGE_REQUEST_INTERVAL_MINUTES before next request.
-      // Log heartbeats every 10 minutes when the interval is long enough
-      // so we can verify the Pico survived the wait.
-      plog_fmt("WAIT_START min=%d", IMAGE_REQUEST_INTERVAL_MINUTES);
-      for (int i = IMAGE_REQUEST_INTERVAL_MINUTES; i > 0; --i) {
-        if (i % 10 == 0 && i != IMAGE_REQUEST_INTERVAL_MINUTES) {
-          plog_fmt("WAIT_TICK min_left=%d", i);
-        }
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Next update in %d minute%s...", i,
-                 (i == 1) ? "" : "s");
-        uart_log(msg);
-        for (int j = 0; j < 60; ++j) {
-          sleep_ms(1000);
-        }
-      }
-      plog("WAIT_DONE");
-    } else if (recv_result == -2) {
-      // request_and_receive_image already logged the timeout and waited 30s.
-      uart_log("Retrying image request after timeout wait");
-      plog_fmt("RECV_TIMEOUT retry attempts=%u", total_sendimg_attempts);
-      last_status_ok = 0;
-      // Continue to start the request sequence again immediately
-      continue;
-    } else {
-      uart_log("Image reception failed, will retry.");
-      plog_fmt("RECV_FAIL rc=%d attempts=%u", recv_result,
-               total_sendimg_attempts);
-      last_status_ok = 0;
-      // Retry every 5 seconds
-      for (int i = 0; i < 5; ++i) {
-        sleep_ms(1000);
-      }
+      reinit_ok = 1;
+      break;
     }
+
+    if (!reinit_ok) {
+      plog("REINIT_FAILED — skipping display");
+      uart_log("Init+PowerOn failed after retries — skipping display");
+    } else {
+      epd_busy_force_released = 0;
+      absolute_time_t disp_t0 = get_absolute_time();
+      int disp_rc = EPD_7IN3F_Display(image_buffer);
+      int64_t disp_us = absolute_time_diff_us(disp_t0, get_absolute_time());
+      int forced_during_display = epd_busy_force_released;
+      uart_log("EPD_7IN3F_Display() done");
+      plog_fmt("DISPLAY_DONE ms=%lld forced=%d rc=%d", disp_us / 1000,
+               forced_during_display, disp_rc);
+      plog_fmt("EPD_PHASES pwr_on=%ld refresh=%ld pwr_off=%ld",
+               (long)epd_phase_power_on_ms, (long)epd_phase_refresh_ms,
+               (long)epd_phase_power_off_ms);
+      plog_fmt("EPD_BUSY04 %d->%d", epd_busy_before_cmd04,
+               epd_busy_after_cmd04);
+      plog_fmt("EPD_BUSY12 %d->%d", epd_busy_before_cmd12,
+               epd_busy_after_cmd12);
+      int real_refresh = (disp_rc == 0 && epd_phase_refresh_ms > 5000 &&
+                          forced_during_display == 0)
+                             ? 1
+                             : 0;
+      plog_fmt("REFRESH_VERDICT real=%d refresh_ms=%ld disp_rc=%d",
+               real_refresh, (long)epd_phase_refresh_ms, disp_rc);
+      uart_log("Image displayed");
+    }
+
+    // Park the panel into deep sleep
+    {
+      int sleep_rc = EPD_7IN3F_Sleep();
+      plog_fmt("EPD_SLEEP rc=%d", sleep_rc);
+    }
+    led_status_off();
+  } else {
+    plog_fmt("RECV_FAIL rc=%d attempts=%d", recv_result, attempts);
+    uart_log("Image reception failed after all retries");
+  }
+
+  // Flush final PLOG lines (display results) to ESP32 before signalling done
+  plog_flush();
+
+  // Signal ESP32 that we're done — it will cut our power
+  uart_puts(UART_ID, "PICODONE\n");
+  uart_log("PICODONE sent — halting");
+
+  // Halt — ESP32 will power us off
+  while (1) {
+    sleep_ms(10000);
   }
 }
