@@ -392,8 +392,10 @@ int main(void) {
     recv_result = request_and_receive_image(image_buffer, IMAGE_SIZE);
     plog_fmt("SENDIMG_RESULT rc=%d recv=%u attempt=%d", recv_result,
              (unsigned)last_receive_count, attempts);
-    if (recv_result == 0) break;  // success
-    if (recv_result == -1) break; // fatal, don't retry
+    if (recv_result == 0)
+      break;  // success
+    if (recv_result == -1)
+      break;  // fatal, don't retry
     // recv_result == -2: timeout, retry
     plog_fmt("RECV_TIMEOUT attempt=%d", attempts);
   }
